@@ -1,15 +1,17 @@
-﻿# Windows Auto Dark/Light Theme Switcher
-# Based on sunrise/sunset times
+﻿# Auto Dark/Light Theme Switcher
+# Auto-detect location via IP, switch theme based on sunrise/sunset
 # Usage:
 #   .\auto-theme.ps1              - Daily setup
 #   .\auto-theme.ps1 -SetTheme   - Set theme only
 #   .\auto-theme.ps1 -Light      - Force light
 #   .\auto-theme.ps1 -Dark       - Force dark
+#   .\auto-theme.ps1 -Locate     - Show current detected location
 
 param(
     [switch]$SetTheme,
     [switch]$Light,
-    [switch]$Dark
+    [switch]$Dark,
+    [switch]$Locate
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,9 +21,6 @@ $ErrorActionPreference = "Stop"
 $ConfigDir  = Join-Path $env:USERPROFILE ".auto-theme"
 $ConfigFile = Join-Path $ConfigDir "config.json"
 $LogFile    = Join-Path $ConfigDir "auto-theme.log"
-
-$DefaultLat = 29.57
-$DefaultLng = 106.45
 
 $PersonalizePath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
 $TaskPrefix = "AutoTheme"
@@ -40,17 +39,34 @@ function Ensure-Config {
     if (-not (Test-Path $ConfigDir)) {
         New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
     }
+
+    $defaults = @{
+        latitude   = 0.0
+        longitude  = 0.0
+        city       = ""
+        darkMode   = $true
+        lastDate   = ""
+        lastLocate = ""
+        sunrise    = ""
+        sunset     = ""
+    }
+
     if (Test-Path $ConfigFile) {
-        return Get-Content $ConfigFile -Raw | ConvertFrom-Json
+        $existing = Get-Content $ConfigFile -Raw | ConvertFrom-Json
+        $changed = $false
+        foreach ($key in $defaults.Keys) {
+            if ($null -eq $existing.PSObject.Properties[$key]) {
+                $existing | Add-Member -NotePropertyName $key -NotePropertyValue $defaults[$key]
+                $changed = $true
+            }
+        }
+        if ($changed) {
+            $existing | ConvertTo-Json -Depth 5 | Set-Content -Path $ConfigFile -Encoding UTF8
+        }
+        return $existing
     }
-    $cfg = @{
-        latitude  = $DefaultLat
-        longitude = $DefaultLng
-        darkMode  = $true
-        lastDate  = ""
-        sunrise   = ""
-        sunset    = ""
-    }
+
+    $cfg = [PSCustomObject]$defaults
     $cfg | ConvertTo-Json | Set-Content -Path $ConfigFile -Encoding UTF8
     return $cfg
 }
@@ -58,6 +74,70 @@ function Ensure-Config {
 function Save-Config {
     param($Config)
     $Config | ConvertTo-Json -Depth 5 | Set-Content -Path $ConfigFile -Encoding UTF8
+}
+
+# ===== Location =====
+
+function Get-IPLocation {
+    # ip-api.com: free, no key, 45 req/min
+    try {
+        $resp = Invoke-RestMethod -Uri "http://ip-api.com/json/?fields=status,lat,lon,city,country" -Method Get -TimeoutSec 8
+        if ($resp.status -eq "success") {
+            return @{
+                latitude  = [double]$resp.lat
+                longitude = [double]$resp.lon
+                city      = "$($resp.city), $($resp.country)"
+            }
+        }
+    } catch {
+        Write-Log "ip-api.com failed, trying backup..."
+    }
+
+    # Backup: ipinfo.io
+    try {
+        $resp = Invoke-RestMethod -Uri "https://ipinfo.io/json" -Method Get -TimeoutSec 8
+        if ($resp.loc) {
+            $parts = $resp.loc -split ","
+            return @{
+                latitude  = [double]$parts[0]
+                longitude = [double]$parts[1]
+                city      = "$($resp.city), $($resp.country)"
+            }
+        }
+    } catch {
+        Write-Log "ipinfo.io also failed"
+    }
+
+    return $null
+}
+
+function Update-Location {
+    param($Config)
+    $today = Get-Date -Format "yyyy-MM-dd"
+
+    # Only locate once per day (unless forced)
+    if ($Config.lastLocate -eq $today -and $Config.latitude -ne 0) {
+        Write-Log "Location already updated today: $($Config.city) ($($Config.latitude), $($Config.longitude))"
+        return $Config
+    }
+
+    Write-Log "Detecting location via IP..."
+    $loc = Get-IPLocation
+    if ($loc) {
+        $Config.latitude   = $loc.latitude
+        $Config.longitude  = $loc.longitude
+        $Config.city       = $loc.city
+        $Config.lastLocate = $today
+        Save-Config $Config
+        Write-Log "Location: $($loc.city) ($($loc.latitude), $($loc.longitude))"
+    } else {
+        if ($Config.latitude -eq 0) {
+            Write-Log "Cannot detect location and no fallback available"
+        } else {
+            Write-Log "Using last known location: $($Config.city)"
+        }
+    }
+    return $Config
 }
 
 # ===== Theme =====
@@ -100,7 +180,7 @@ function Get-SunTimes {
             }
         }
     } catch {
-        Write-Log "API request failed: $_"
+        Write-Log "Sun API failed: $_"
     }
     return $null
 }
@@ -148,6 +228,7 @@ function Register-DailySetupTask {
 
 $config = Ensure-Config
 
+# Quick modes
 if ($Light) {
     Set-WindowsTheme "light"
     Write-Host "Switched to Light Mode"
@@ -159,7 +240,23 @@ if ($Dark) {
     exit 0
 }
 
+if ($Locate) {
+    $config = Update-Location $config
+    if ($config.latitude -ne 0) {
+        Write-Host ""
+        Write-Host "=============================="
+        Write-Host "  City:      $($config.city)"
+        Write-Host "  Latitude:  $($config.latitude)"
+        Write-Host "  Longitude: $($config.longitude)"
+        Write-Host "=============================="
+    } else {
+        Write-Host "Cannot detect location"
+    }
+    exit 0
+}
+
 if ($SetTheme) {
+    $config = Update-Location $config
     $times = Get-SunTimes -Lat $config.latitude -Lng $config.longitude
     if ($times) {
         $now = Get-Date -Format "HH:mm"
@@ -177,8 +274,16 @@ if ($SetTheme) {
     exit 0
 }
 
-# Full startup
+# ===== Full Daily Setup =====
 Write-Log "====== Auto Theme System Started ======"
+
+# Auto-detect location (once per day)
+$config = Update-Location $config
+
+if ($config.latitude -eq 0) {
+    Write-Log "No location available, cannot proceed"
+    exit 1
+}
 
 $times = Get-SunTimes -Lat $config.latitude -Lng $config.longitude
 
@@ -187,7 +292,7 @@ if ($times) {
     $config.sunset  = $times.sunset
     $config.lastDate = Get-Date -Format "yyyy-MM-dd"
     Save-Config $config
-    Write-Log "Lat: $($config.latitude), Lng: $($config.longitude)"
+    Write-Log "Location: $($config.city) ($($config.latitude), $($config.longitude))"
     Write-Log "Sunrise: $($times.sunrise)  Sunset: $($times.sunset)"
 } else {
     Write-Log "API failed, using cached times"
@@ -218,9 +323,10 @@ Register-DailySetupTask
 Write-Log "====== Setup Complete ======"
 Write-Host ""
 Write-Host "========================================="
-Write-Host "  Sunrise: $($times.sunrise) -> Light Mode"
-Write-Host "  Sunset:  $($times.sunset)  -> Dark Mode"
-Write-Host "  Daily refresh at 00:05"
+Write-Host "  Location:   $($config.city)"
+Write-Host "  Sunrise:    $($times.sunrise) -> Light"
+Write-Host "  Sunset:     $($times.sunset)  -> Dark"
+Write-Host "  Auto-refresh daily at 00:05"
 Write-Host "========================================="
 Write-Host ""
-Write-Host "Manual: .\auto-theme.ps1 -Dark / -Light"
+Write-Host "Manual: .\auto-theme.ps1 -Dark / -Light / -Locate"
