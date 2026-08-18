@@ -49,13 +49,11 @@ function Invoke-Locate {
     $cfg = Get-Config
     $today = Get-Date -Format "yyyy-MM-dd"
 
-    # 如果配置存在且今天已定位过，直接返回
     if ($cfg -and $cfg.lastLocate -eq $today -and $cfg.latitude -ne 0) {
         Write-Log "Using cached location: $($cfg.city)"
         return $cfg
     }
 
-    # 创建新配置或更新现有配置
     if (-not $cfg) {
         $cfg = [PSCustomObject]@{
             latitude=0; longitude=0; city=""; sunrise=""; sunset=""
@@ -165,60 +163,41 @@ try {
         Set-WindowsTheme -Mode "dark"
     }
 
-            # 注册计划任务
+    # 注册计划任务
     $scriptPath = $PSCommandPath
     if (-not $scriptPath) { $scriptPath = Join-Path $PSScriptRoot "auto-theme.ps1" }
 
-    Write-Log "DEBUG: PSCommandPath=$PSCommandPath PSScriptRoot=$PSScriptRoot scriptPath=$scriptPath"
-    Write-Log "DEBUG: sun.sunrise=$($sun.sunrise) sun.sunset=$($sun.sunset)"
-
     try {
         # 删除旧任务
-        Write-Log "DEBUG: Deleting old tasks..."
         Get-ScheduledTask -TaskName "AutoTheme-*" -ErrorAction SilentlyContinue |
             Unregister-ScheduledTask -Confirm:$false
-        Write-Log "DEBUG: Old tasks deleted"
 
         # 日出切浅色
-        Write-Log "DEBUG: Parsing sunrise time: 2000-01-01 $($sun.sunrise)"
         $srTime = [DateTime]::Parse("2000-01-01 $($sun.sunrise)")
-        Write-Log "DEBUG: srTime=$srTime"
         $action1 = New-ScheduledTaskAction -Execute "powershell.exe" `
             -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Light"
-        Write-Log "DEBUG: Creating trigger1..."
         $trigger1 = New-ScheduledTaskTrigger -Daily -At $srTime
-        Write-Log "DEBUG: Registering task1..."
         Register-ScheduledTask -TaskName "AutoTheme-Sunrise" -Action $action1 -Trigger $trigger1 `
             -Description "Auto Theme: switch to Light at sunrise" -Force | Out-Null
-        Write-Log "DEBUG: Task1 registered"
 
         # 日落切深色
-        Write-Log "DEBUG: Parsing sunset time: 2000-01-01 $($sun.sunset)"
         $ssTime = [DateTime]::Parse("2000-01-01 $($sun.sunset)")
-        Write-Log "DEBUG: ssTime=$ssTime"
         $action2 = New-ScheduledTaskAction -Execute "powershell.exe" `
             -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Dark"
-        Write-Log "DEBUG: Creating trigger2..."
         $trigger2 = New-ScheduledTaskTrigger -Daily -At $ssTime
-        Write-Log "DEBUG: Registering task2..."
         Register-ScheduledTask -TaskName "AutoTheme-Sunset" -Action $action2 -Trigger $trigger2 `
             -Description "Auto Theme: switch to Dark at sunset" -Force | Out-Null
-        Write-Log "DEBUG: Task2 registered"
 
         # 每日重新定位
-        Write-Log "DEBUG: Creating DailySetup trigger..."
         $action3 = New-ScheduledTaskAction -Execute "powershell.exe" `
             -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
         $trigger3 = New-ScheduledTaskTrigger -Daily -At ([DateTime]::Parse("2000-01-01 00:05"))
-        Write-Log "DEBUG: Registering DailySetup..."
         Register-ScheduledTask -TaskName "AutoTheme-DailySetup" -Action $action3 -Trigger $trigger3 `
             -Description "Auto Theme: daily re-locate and update schedule" -Force | Out-Null
-        Write-Log "DEBUG: DailySetup registered"
 
         Write-Log "Registered: Sunrise=$($sun.sunrise) Sunset=$($sun.sunset) DailySetup=00:05"
     } catch {
         Write-Log "WARN: Cannot register tasks (need admin): $_"
-        Write-Log "DEBUG: Error occurred at line: $($_.InvocationInfo.ScriptLineNumber)"
         Write-Host "Note: Schedule registration needs admin. Run as Admin to enable auto-switch."
     }
 
