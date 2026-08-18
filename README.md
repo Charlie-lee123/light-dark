@@ -1,90 +1,91 @@
-# 🌗 Auto Theme Switcher
+# Windows 自动深色/浅色模式切换 (V2)
 
-**让 Windows 跟着太阳自动切换深色/浅色模式。**
+根据日出日落时间自动切换 Windows 深色/浅色模式。
 
-日出 → 浅色，日落 → 深色。全自动，装一次就不用管。
+## V2 更新内容
 
----
+- ✅ **任务栏实时刷新**：新增 `Invoke-ThemeRefresh` 功能，切换后任务栏立即响应
+- ✅ **日志增强**：记录切换过程中的详细信息，便于调试
 
-## 一条命令搞定
+## 功能特性
+
+- 🌅 **日出切浅色**：天亮自动切回浅色模式
+- 🌆 **日落切深色**：天黑自动切深色模式
+- 📍 **自动定位**：根据 IP 地址自动获取你的位置
+- ⏰ **每日更新**：自动重新获取日出日落时间（凌晨 0:05）
+- 💾 **配置缓存**：位置信息缓存在 `~/.auto-theme/config.json`
+- 📝 **日志记录**：所有操作记录在 `~/.auto-theme/auto-theme.log`
+
+## 使用方法
+
+### 首次运行（自动设置）
 
 ```powershell
 .\auto-theme.ps1
 ```
 
-打开 PowerShell，粘贴这行，回车。完事。
-
-脚本会自动：
-- 根据 IP 定位你的城市
-- 算出今天的日出日落时间
-- 现在该是深色还是浅色，立刻切好
-- 注册 Windows 计划任务，以后每天自动切
-
----
-
-## 手动切换
-
-不想等日出日落？手动切：
+### 手动切换
 
 ```powershell
-.\auto-theme.ps1 -Dark    # 立刻切深色
-.\auto-theme.ps1 -Light   # 立刻切浅色
+.\auto-theme.ps1 -Dark    # 立即切深色
+.\auto-theme.ps1 -Light   # 立即切浅色
 ```
 
----
+### 以管理员身份运行
 
-## 如果定位不准
+计划任务需要管理员权限。首次运行后，如果有管理员权限，会自动注册以下任务：
 
-用了 VPN 之类的，IP 定位可能跑偏。手动改配置：
+- `AutoTheme-Sunrise` - 日出时切浅色
+- `AutoTheme-Sunset` - 日落时切深色
+- `AutoTheme-DailySetup` - 每日重新定位和更新时间
 
-1. 打开 `~/.auto-theme/config.json`
-2. 改 `latitude`（纬度）和 `longitude`（经度）
-3. 把 `lastLocate` 改成空字符串 `""`
-4. 再跑一次 `.\auto-theme.ps1`
+## 配置文件
 
-常用城市坐标：
+位置：`~/.auto-theme/config.json`
 
-| 城市 | 纬度 | 经度 |
-|------|------|------|
-| 北京 | 39.90 | 116.40 |
-| 上海 | 31.23 | 121.47 |
-| 广州 | 23.13 | 113.26 |
-| 深圳 | 22.54 | 114.06 |
-| 成都 | 30.57 | 104.07 |
-| 重庆 | 29.57 | 106.45 |
-
----
-
-## 卸载
-
-```powershell
-Get-ScheduledTask -TaskName "AutoTheme*" | Unregister-ScheduledTask -Confirm:$false
-Remove-Item -Recurse ~/.auto-theme/
+```json
+{
+  "latitude": 29.3416,
+  "longitude": 104.7786,
+  "city": "Neijiang, CN",
+  "sunrise": "06:23",
+  "sunset": "19:25",
+  "darkMode": true,
+  "lastDate": "2026-08-18",
+  "lastLocate": "2026-08-18"
+}
 ```
 
----
+## 日志文件
 
-## 常见问题
+位置：`~/.auto-theme/auto-theme.log`
 
-**Q：用了之后需要管理员权限吗？**
-不需要。改的是当前用户设置。
+## 系统要求
 
-**Q：会影响其他用户吗？**
-不会，只改你自己的。
+- Windows 10/11
+- PowerShell 5.1+
 
-**Q：联网失败怎么办？**
-用上次缓存的时间，不影响正常使用。
+## 故障排查
 
----
+1. **查看日志**：
+   ```powershell
+   cat ~/.auto-theme/auto-theme.log
+   ```
 
-## 更新日志
+2. **查看计划任务**：
+   ```powershell
+   Get-ScheduledTask -TaskName "AutoTheme-*"
+   ```
 
-**v1.2.0** — 修复任务栏不跟随切换的 bug，用 `SystemParametersInfo` 刷新系统 UI，零闪烁。
+3. **手动触发**：
+   ```powershell
+   # 手动执行日出切换
+   .\auto-theme.ps1 -Light
+   
+   # 手动执行日落切换
+   .\auto-theme.ps1 -Dark
+   ```
 
-**v1.1.0** — 初始版本。
+## 许可证
 
----
-
-## License
-
-MIT
+MIT License
