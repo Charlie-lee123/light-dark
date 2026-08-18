@@ -110,6 +110,27 @@ Windows 自动深色/浅色模式切换工具。自动检测当前位置，基�
   Remove-Item -Recurse ~/.auto-theme/
   ```
 
+## 🐛 修复记录
+
+### v1.2.0 — 2026-08-18
+**问题**：切换主题时任务栏和开始菜单不跟随变化，只有应用窗口变色。
+
+**原因**：任务栏是 Explorer 的子窗口，在启动时读取并缓存主题设置，修改注册表后 Explorer 不会自动重新加载。
+
+**修复**：
+- 采用 `SystemParametersInfo` 三连刷新（`SPI_SETICONSPECIALSPACING` + `SPI_SETNONCLIENTMETRICS` + `SPI_SETANIMATION`）强制系统非客户端区域重新读取主题
+- 配合 `WM_SETTINGCHANGE` 广播通知所有窗口
+- 完全不重启 Explorer，**零闪烁**
+
+### v1.1.0 — 2026-08-18
+**问题**：`Set-ItemProperty` 修改注册表后，只有部分应用窗口切换主题，任务栏/开始菜单完全不变。
+
+**修复尝试**：
+- v1: `WM_SETTINGCHANGE` 广播 — 无效
+- v2: `DwmSetWindowAttribute` 设置任务栏深色模式属性 — 无效
+- v3: 重启 Explorer — 有效但有屏幕闪烁
+- v4（最终）: `SystemParametersInfo` 三连刷新 — 有效且零闪烁
+
 ## 📜 License
 
 MIT License
