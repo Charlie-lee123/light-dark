@@ -148,22 +148,32 @@ function Set-WindowsTheme {
     Set-ItemProperty -Path $PersonalizePath -Name "AppsUseLightTheme"   -Value $value
     Set-ItemProperty -Path $PersonalizePath -Name "SystemUsesLightTheme" -Value $value
 
-    # Force system UI refresh so taskbar/start menu respond immediately
-    Add-Type -TypeDefinition @"
+    # Send WM_SETTINGCHANGE via .NET to notify Explorer of theme change
+    Add-Type @"
 using System;
 using System.Runtime.InteropServices;
-public class ThemeRefresh {
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern bool SystemParametersInfo(int uAction, int uParam, IntPtr lpvParam, int fuWinIni);
-    public const int SPI_SETICONSPECIALSPACING = 0x002E;
-    public const int SPIF_UPDATEINIFILE = 0x01;
-    public const int SPIF_SENDCHANGE = 0x02;
-    public static void Refresh() {
-        SystemParametersInfo(SPI_SETICONSPECIALSPACING, 0, IntPtr.Zero, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
-    }
+public class Win32 {
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern IntPtr SendMessageTimeout(
+        IntPtr hWnd, uint Msg, IntPtr wParam, string lParam,
+        uint fuFlags, uint uTimeout, IntPtr lpdwResult);
 }
 "@ -ErrorAction SilentlyContinue
-    [ThemeRefresh]::Refresh()
+
+    try {
+        [Win32]::SendMessageTimeout(
+            [IntPtr]0xFFFF, 0x001A, [IntPtr]0,
+            "ImmersiveColorSet", 0x0002, 2000, [IntPtr]0)
+        Write-Log "Broadcast WM_SETTINGCHANGE sent"
+    } catch {
+        Write-Log "WM_SETTINGCHANGE broadcast failed: $_"
+    }
+
+    # Restart Explorer to force full taskbar/Start menu redraw
+    Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+    Start-Process explorer
+    Write-Log "Explorer restarted"
 
     $label = if ($Mode -eq "dark") { "[Dark]" } else { "[Light]" }
     Write-Log "Switched to $label"
