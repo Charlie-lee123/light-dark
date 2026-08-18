@@ -147,6 +147,24 @@ function Set-WindowsTheme {
     $value = if ($Mode -eq "dark") { 0 } else { 1 }
     Set-ItemProperty -Path $PersonalizePath -Name "AppsUseLightTheme"   -Value $value
     Set-ItemProperty -Path $PersonalizePath -Name "SystemUsesLightTheme" -Value $value
+
+    # Force system UI refresh so taskbar/start menu respond immediately
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class ThemeRefresh {
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool SystemParametersInfo(int uAction, int uParam, IntPtr lpvParam, int fuWinIni);
+    public const int SPI_SETICONSPECIALSPACING = 0x002E;
+    public const int SPIF_UPDATEINIFILE = 0x01;
+    public const int SPIF_SENDCHANGE = 0x02;
+    public static void Refresh() {
+        SystemParametersInfo(SPI_SETICONSPECIALSPACING, 0, IntPtr.Zero, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+    }
+}
+"@ -ErrorAction SilentlyContinue
+    [ThemeRefresh]::Refresh()
+
     $label = if ($Mode -eq "dark") { "[Dark]" } else { "[Light]" }
     Write-Log "Switched to $label"
 }
