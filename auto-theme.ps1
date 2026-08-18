@@ -1,102 +1,212 @@
-﻿<#
+<#
 .SYNOPSIS
-  Switches Windows between dark and light mode (zero flicker).
+  Windows 自动深色/浅色模式切换工具。
 .DESCRIPTION
-  Sets registry values + uses SystemParametersInfo triple-refresh
-  to force taskbar/startmenu to update without restarting Explorer.
-.PARAMETER Dark
-  Switch to dark mode.
-.PARAMETER Light
-  Switch to light mode.
+  自动定位 → 获取日出日落 → 注册定时任务 → 到点自动切换。
+  切换使用 SystemParametersInfo + WM_SETTINGCHANGE，零闪烁。
+.PARAMETER Dark    强制切深色
+.PARAMETER Light   强制切浅色
 .EXAMPLE
-  .\auto-theme.ps1 -Dark
-  .\auto-theme.ps1 -Light
+  .\auto-theme.ps1          # 首次运行：定位 + 设置 + 注册任务
+  .\auto-theme.ps1 -Dark    # 立刻切深色
+  .\auto-theme.ps1 -Light   # 立刻切浅色
 #>
 param(
     [switch]$Dark,
     [switch]$Light
 )
 
+$ErrorActionPreference = "Stop"
 $PersonalizePath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-$LogFile = Join-Path $PSScriptRoot "auto-theme.log"
+$ConfigDir  = Join-Path $env:USERPROFILE ".auto-theme"
+$ConfigFile = Join-Path $ConfigDir "config.json"
+$LogFile    = Join-Path $ConfigDir "auto-theme.log"
 
+# ===== Helpers =====
 function Write-Log {
     param([string]$Msg)
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    "[$ts] $Msg" | Out-File -FilePath $LogFile -Encoding utf8 -Append
+    $line = "[$ts] $Msg"
+    $line | Out-File -FilePath $LogFile -Encoding utf8 -Append
+    Write-Host $line
 }
 
-# --- Theme switching ---
+function Get-Config {
+    if (Test-Path $ConfigFile) {
+        return Get-Content $ConfigFile -Raw | ConvertFrom-Json
+    }
+    return [PSCustomObject]@{
+        latitude=0; longitude=0; city=""; sunrise=""; sunset=""
+        darkMode=$true; lastDate=""; lastLocate=""
+    }
+}
+
+function Save-Config {
+    param($Cfg)
+    if (-not (Test-Path $ConfigDir)) { New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null }
+    $Cfg | ConvertTo-Json | Set-Content $ConfigFile -Encoding UTF8
+}
+
+# ===== 定位 =====
+function Invoke-Locate {
+    $cfg = Get-Config
+    $today = Get-Date -Format "yyyy-MM-dd"
+    if ($cfg.lastLocate -eq $today -and $cfg.latitude -ne 0) {
+        Write-Log "Using cached location: $($cfg.city)"
+        return $cfg
+    }
+
+    Write-Log "Locating via IP..."
+    try {
+        $ip = (Invoke-RestMethod -Uri "https://ipinfo.io/json" -TimeoutSec 5)
+        $cfg.latitude  = [double]$ip.loc.Split(",")[0]
+        $cfg.longitude = [double]$ip.loc.Split(",")[1]
+        $cfg.city      = "$($ip.city), $($ip.country)"
+        $cfg.lastLocate = $today
+        Write-Log "Located: $($cfg.city) ($($cfg.latitude), $($cfg.longitude))"
+    } catch {
+        Write-Log "Locate failed: $_"
+        if ($cfg.latitude -eq 0) { throw "Cannot locate and no cached coordinates." }
+    }
+    return $cfg
+}
+
+# ===== 日出日落 =====
+function Get-SunTimes {
+    param($Lat, $Lon)
+    $url = "https://api.sunrise-sunset.org/json?lat=$Lat&lng=$Lon&formatted=0"
+    $resp = Invoke-RestMethod -Uri $url -TimeoutSec 10
+    $r = $resp.results
+
+    # API returns UTC ISO 8601, convert to local (UTC+8)
+    $localOffset = [TimeSpan]::FromHours(8)
+    $sunrise = [DateTimeOffset]::Parse($r.sunrise).ToOffset($localOffset).ToString("HH:mm")
+    $sunset  = [DateTimeOffset]::Parse($r.sunset).ToOffset($localOffset).ToString("HH:mm")
+
+    Write-Log "Sun: sunrise=$sunrise sunset=$sunset"
+    return @{ sunrise = $sunrise; sunset = $sunset }
+}
+
+# ===== 主题切换（零闪烁）=====
 function Set-WindowsTheme {
     param([string]$Mode)
     $value = if ($Mode -eq "dark") { 0 } else { 1 }
 
-    # Step 1: Set registry values
+    # 1. 注册表
     Set-ItemProperty -Path $PersonalizePath -Name "AppsUseLightTheme"   -Value $value
     Set-ItemProperty -Path $PersonalizePath -Name "SystemUsesLightTheme" -Value $value
-    Write-Log "Registry set: SystemUsesLightTheme=$value"
 
-    # Step 2: SystemParametersInfo triple-refresh
+    # 2. SystemParametersInfo 刷新
     Add-Type @"
 using System;
 using System.Runtime.InteropServices;
-public class SysRefresh {
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern bool SystemParametersInfo(int uAction, int uParam, IntPtr lParam, int fuWinIni);
-
-    public const int SPI_SETICONSPECIALSPACING = 0x002E;
-    public const int SPI_SETNONCLIENTMETRICS  = 0x002A;
-    public const int SPI_SETANIMATION          = 0x0049;
-    public const int SPIF_UPDATEINIFILE        = 0x01;
-    public const int SPIF_SENDCHANGE           = 0x02;
-
-    public static void Refresh() {
-        SystemParametersInfo(SPI_SETICONSPECIALSPACING, 0, IntPtr.Zero, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
-        SystemParametersInfo(SPI_SETNONCLIENTMETRICS,  0, IntPtr.Zero, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
-        SystemParametersInfo(SPI_SETANIMATION,          0, IntPtr.Zero, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+public class _SysRefresh {
+    [DllImport("user32.dll")]
+    public static extern bool SystemParametersInfo(int a, int b, IntPtr c, int d);
+    public static void Do() {
+        SystemParametersInfo(0x002E, 0, IntPtr.Zero, 0x03);
+        SystemParametersInfo(0x002A, 0, IntPtr.Zero, 0x03);
+        SystemParametersInfo(0x0049, 0, IntPtr.Zero, 0x03);
     }
 }
 "@ -ErrorAction SilentlyContinue
+    try { [_SysRefresh]::Do() } catch {}
 
-    try {
-        [SysRefresh]::Refresh()
-        Write-Log "SystemParametersInfo triple-refresh sent"
-    } catch {
-        Write-Log "SystemParametersInfo failed: $_"
-    }
-
-    # Step 3: Broadcast WM_SETTINGCHANGE
+    # 3. WM_SETTINGCHANGE 广播
     Add-Type @"
 using System;
 using System.Runtime.InteropServices;
-public class WmBroadcast {
-    [DllImport("user32.dll", CharSet = CharSet.Auto)]
-    public static extern void SendMessageTimeout(
-        IntPtr hWnd, uint Msg, IntPtr wParam, string lParam,
-        uint fuFlags, uint uTimeout, IntPtr lpdwResult);
+public class _WmBC {
+    [DllImport("user32.dll", CharSet=CharSet.Auto)]
+    public static extern void SendMessageTimeout(IntPtr h, uint m, IntPtr w, string l, uint f, uint t, IntPtr r);
 }
 "@ -ErrorAction SilentlyContinue
+    try { [_WmBC]::SendMessageTimeout([IntPtr]0xFFFF, 0x001A, [IntPtr]0, "ImmersiveColorSet", 0x02, 2000, [IntPtr]0) } catch {}
 
-    try {
-        [WmBroadcast]::SendMessageTimeout(
-            [IntPtr]0xFFFF, 0x001A, [IntPtr]0,
-            "ImmersiveColorSet", 0x0002, 2000, [IntPtr]0)
-        Write-Log "WM_SETTINGCHANGE broadcast sent"
-    } catch {
-        Write-Log "WM_SETTINGCHANGE failed: $_"
-    }
-
-    $label = if ($Mode -eq "dark") { "[Dark]" } else { "[Light]" }
-    Write-Log "Switched to $label"
+    $label = if ($Mode -eq "dark") { "Dark" } else { "Light" }
+    Write-Log "Switched to [$label]"
+    Write-Host "Switched to $label Mode"
 }
 
-# --- Entry ---
-if ($Dark) {
-    Set-WindowsTheme -Mode "dark"
-    Write-Host "Switched to Dark Mode"
-} elseif ($Light) {
-    Set-WindowsTheme -Mode "light"
-    Write-Host "Switched to Light Mode"
-} else {
-    Write-Host "Usage: .\auto-theme.ps1 -Dark  OR  .\auto-theme.ps1 -Light"
+# ===== 注册计划任务（整体 try-catch，权限不足时优雅降级）=====
+function Register-Tasks {
+    param($Sunrise, $Sunset)
+
+    $scriptPath = $MyInvocation.ScriptName
+    if (-not $scriptPath) { $scriptPath = $PSCommandPath }
+    if (-not $scriptPath) { $scriptPath = Join-Path $PSScriptRoot "auto-theme.ps1" }
+
+    try {
+        # 删除旧任务
+        Get-ScheduledTask -TaskName "AutoTheme-*" -ErrorAction SilentlyContinue |
+            Unregister-ScheduledTask -Confirm:$false
+
+        # 日出切浅色
+        $srHour, $srMin = $Sunrise.Split(":")
+        $action1 = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Light"
+        $trigger1 = New-ScheduledTaskTrigger -Daily -At "${srHour}:${srMin}"
+        Register-ScheduledTask -TaskName "AutoTheme-Sunrise" -Action $action1 -Trigger $trigger1 `
+            -Description "Auto Theme: switch to Light at sunrise" -Force | Out-Null
+
+        # 日落切深色
+        $ssHour, $ssMin = $Sunset.Split(":")
+        $action2 = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Dark"
+        $trigger2 = New-ScheduledTaskTrigger -Daily -At "${ssHour}:${ssMin}"
+        Register-ScheduledTask -TaskName "AutoTheme-Sunset" -Action $action2 -Trigger $trigger2 `
+            -Description "Auto Theme: switch to Dark at sunset" -Force | Out-Null
+
+        # 每日重新定位
+        $action3 = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
+        $trigger3 = New-ScheduledTaskTrigger -Daily -At "00:05"
+        Register-ScheduledTask -TaskName "AutoTheme-DailySetup" -Action $action3 -Trigger $trigger3 `
+            -Description "Auto Theme: daily re-locate and update schedule" -Force | Out-Null
+
+        Write-Log "Registered: Sunrise=$Sunrise Sunset=$Sunset DailySetup=00:05"
+    } catch {
+        Write-Log "WARN: Cannot register tasks (need admin): $_"
+        Write-Host "Note: Schedule registration needs admin. Run as Admin to enable auto-switch."
+    }
+}
+
+# ===== 根据当前时间决定主题 =====
+function Set-CurrentTheme {
+    param($Sunrise, $Sunset)
+    $now = Get-Date -Format "HH:mm"
+    if ($now -ge $Sunrise -and $now -lt $Sunset) {
+        Set-WindowsTheme -Mode "light"
+    } else {
+        Set-WindowsTheme -Mode "dark"
+    }
+}
+
+# ===== Main =====
+try {
+    if ($Dark) {
+        Set-WindowsTheme -Mode "dark"
+        exit 0
+    }
+    if ($Light) {
+        Set-WindowsTheme -Mode "light"
+        exit 0
+    }
+
+    Write-Log "====== Auto Theme Start ======"
+    $cfg = Invoke-Locate
+    $sun = Get-SunTimes -Lat $cfg.latitude -Lon $cfg.longitude
+    $cfg.sunrise = $sun.sunrise
+    $cfg.sunset  = $sun.sunset
+    $cfg.lastDate = Get-Date -Format "yyyy-MM-dd"
+    Save-Config $cfg
+
+    Set-CurrentTheme -Sunrise $sun.sunrise -Sunset $sun.sunset
+    Register-Tasks -Sunrise $sun.sunrise -Sunset $sun.sunset
+
+    Write-Log "====== Setup Complete ======"
+} catch {
+    Write-Log "ERROR: $_"
+    Write-Host "Error: $_"
+    exit 1
 }
