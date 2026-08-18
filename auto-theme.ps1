@@ -165,10 +165,11 @@ try {
         Set-WindowsTheme -Mode "dark"
     }
 
-        # 注册计划任务
+            # 注册计划任务
     $scriptPath = $PSCommandPath
     if (-not $scriptPath) { $scriptPath = Join-Path $PSScriptRoot "auto-theme.ps1" }
 
+    Write-Log "DEBUG: PSCommandPath=$PSCommandPath PSScriptRoot=$PSScriptRoot scriptPath=$scriptPath"
     Write-Log "DEBUG: sun.sunrise=$($sun.sunrise) sun.sunset=$($sun.sunset)"
 
     try {
