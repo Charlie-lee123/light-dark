@@ -145,57 +145,40 @@ function Update-Location {
 function Set-WindowsTheme {
     param([string]$Mode)
     $value = if ($Mode -eq "dark") { 0 } else { 1 }
+
+    # Step 1: Set all registry values first
     Set-ItemProperty -Path $PersonalizePath -Name "AppsUseLightTheme"   -Value $value
     Set-ItemProperty -Path $PersonalizePath -Name "SystemUsesLightTheme" -Value $value
+    $dwmPath = "HKCU:\Software\Microsoft\Windows\DWM"
+    if (Test-Path $dwmPath) {
+        Set-ItemProperty -Path $dwmPath -Name "AccentColor" `
+            -Value $(if ($Mode -eq "dark") { 0xff2d2d2d } else { 0xffcccccc }) -ErrorAction SilentlyContinue
+    }
 
-    # Load Win32 APIs for UI refresh
+    # Step 2: Kill Explorer, then start it (it reads registry on launch)
+    Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 200
+    Start-Process explorer
+
+    # Step 3: After Explorer restarts, also broadcast WM_SETTINGCHANGE
+    # so any remaining windows update
     Add-Type @"
 using System;
 using System.Runtime.InteropServices;
-using System.Collections.Generic;
-
-public class ThemeWin32 {
-    delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
-    [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lParam);
-    [DllImport("user32.dll")] static extern int GetWindowThreadProcessId(IntPtr hWnd, out int processId);
-    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
-    [DllImport("user32.dll")] static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder name, int maxCount);
-    [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int val, int size);
-
-    const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
-
-    public static void ApplyDarkModeToTaskbar(int useDark) {
-        int explorerPid = 0;
-        try {
-            var proc = System.Diagnostics.Process.GetProcessesByName("explorer")[0];
-            explorerPid = proc.Id;
-        } catch { return; }
-
-        EnumWindows(delegate(IntPtr hWnd, IntPtr _) {
-            int pid;
-            GetWindowThreadProcessId(hWnd, out pid);
-            if (pid == explorerPid && IsWindowVisible(hWnd)) {
-                var sb = new System.Text.StringBuilder(256);
-                GetClassName(hWnd, sb, 256);
-                string cls = sb.ToString();
-                if (cls == "Shell_TrayWnd" || cls == "Shell_SecondaryTrayWnd" || cls == "MSTaskSwWClass") {
-                    int val = useDark;
-                    DwmSetWindowAttribute(hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref val, 4);
-                }
-            }
-            return true;
-        }, IntPtr.Zero);
-    }
+public class WmBroadcast {
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern void SendMessageTimeout(
+        IntPtr hWnd, uint Msg, IntPtr wParam, string lParam,
+        uint fuFlags, uint uTimeout, IntPtr lpdwResult);
 }
 "@ -ErrorAction SilentlyContinue
 
+    Start-Sleep -Milliseconds 500
     try {
-        [ThemeWin32]::ApplyDarkModeToTaskbar($value)
-        Write-Log "DwmSetWindowAttribute applied to taskbar"
-    } catch {
-        Write-Log "DwmSetWindowAttribute failed: $_"
-    }
+        [WmBroadcast]::SendMessageTimeout(
+            [IntPtr]0xFFFF, 0x001A, [IntPtr]0,
+            "ImmersiveColorSet", 0x0002, 2000, [IntPtr]0)
+    } catch {}
 
     $label = if ($Mode -eq "dark") { "[Dark]" } else { "[Light]" }
     Write-Log "Switched to $label"
