@@ -141,26 +141,26 @@ function Register-Tasks {
         Get-ScheduledTask -TaskName "AutoTheme-*" -ErrorAction SilentlyContinue |
             Unregister-ScheduledTask -Confirm:$false
 
-        # 日出切浅色
-        $srHour, $srMin = $Sunrise.Split(":")
+                # 日出切浅色
+        $srTime = [DateTime]::Parse("2000-01-01 $Sunrise")
         $action1 = New-ScheduledTaskAction -Execute "powershell.exe" `
             -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Light"
-        $trigger1 = New-ScheduledTaskTrigger -Daily -At "${srHour}:${srMin}"
+        $trigger1 = New-ScheduledTaskTrigger -Daily -At $srTime
         Register-ScheduledTask -TaskName "AutoTheme-Sunrise" -Action $action1 -Trigger $trigger1 `
             -Description "Auto Theme: switch to Light at sunrise" -Force | Out-Null
 
         # 日落切深色
-        $ssHour, $ssMin = $Sunset.Split(":")
+        $ssTime = [DateTime]::Parse("2000-01-01 $Sunset")
         $action2 = New-ScheduledTaskAction -Execute "powershell.exe" `
             -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Dark"
-        $trigger2 = New-ScheduledTaskTrigger -Daily -At "${ssHour}:${ssMin}"
+        $trigger2 = New-ScheduledTaskTrigger -Daily -At $ssTime
         Register-ScheduledTask -TaskName "AutoTheme-Sunset" -Action $action2 -Trigger $trigger2 `
             -Description "Auto Theme: switch to Dark at sunset" -Force | Out-Null
 
         # 每日重新定位
         $action3 = New-ScheduledTaskAction -Execute "powershell.exe" `
             -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
-        $trigger3 = New-ScheduledTaskTrigger -Daily -At "00:05"
+        $trigger3 = New-ScheduledTaskTrigger -Daily -At ([DateTime]::Parse("2000-01-01 00:05"))
         Register-ScheduledTask -TaskName "AutoTheme-DailySetup" -Action $action3 -Trigger $trigger3 `
             -Description "Auto Theme: daily re-locate and update schedule" -Force | Out-Null
 
