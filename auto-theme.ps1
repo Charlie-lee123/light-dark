@@ -35,10 +35,7 @@ function Get-Config {
     if (Test-Path $ConfigFile) {
         return Get-Content $ConfigFile -Raw | ConvertFrom-Json
     }
-    return [PSCustomObject]@{
-        latitude=0; longitude=0; city=""; sunrise=""; sunset=""
-        darkMode=$true; lastDate=""; lastLocate=""
-    }
+    return $null
 }
 
 function Save-Config {
@@ -51,9 +48,19 @@ function Save-Config {
 function Invoke-Locate {
     $cfg = Get-Config
     $today = Get-Date -Format "yyyy-MM-dd"
-    if ($cfg.lastLocate -eq $today -and $cfg.latitude -ne 0) {
+
+    # 如果配置存在且今天已定位过，直接返回
+    if ($cfg -and $cfg.lastLocate -eq $today -and $cfg.latitude -ne 0) {
         Write-Log "Using cached location: $($cfg.city)"
         return $cfg
+    }
+
+    # 创建新配置或更新现有配置
+    if (-not $cfg) {
+        $cfg = [PSCustomObject]@{
+            latitude=0; longitude=0; city=""; sunrise=""; sunset=""
+            darkMode=$true; lastDate=""; lastLocate=""
+        }
     }
 
     Write-Log "Locating via IP..."
@@ -128,24 +135,38 @@ public class _WmBC {
     Write-Host "Switched to $label Mode"
 }
 
-# ===== 注册计划任务 =====
-function Register-Tasks {
-    param($Sunrise, $Sunset)
-
-    # 如果参数为空，从配置读取（管理员模式下参数可能丢失）
-    if (-not $Sunrise -or -not $Sunset) {
-        $cfg = Get-Config
-        $Sunrise = if ($Sunrise) { $Sunrise } else { $cfg.sunrise }
-        $Sunset  = if ($Sunset)  { $Sunset  } else { $cfg.sunset }
+# ===== Main =====
+try {
+    # 手动切换模式
+    if ($Dark) {
+        Set-WindowsTheme -Mode "dark"
+        exit 0
+    }
+    if ($Light) {
+        Set-WindowsTheme -Mode "light"
+        exit 0
     }
 
-    if (-not $Sunrise -or -not $Sunset) {
-        Write-Log "ERROR: No sunrise/sunset times available"
-        return
+    # 正常流程：定位 → 日出日落 → 设置主题 → 注册任务
+    Write-Log "====== Auto Theme Start ======"
+
+    $cfg = Invoke-Locate
+    $sun = Get-SunTimes -Lat $cfg.latitude -Lon $cfg.longitude
+    $cfg.sunrise = $sun.sunrise
+    $cfg.sunset  = $sun.sunset
+    $cfg.lastDate = Get-Date -Format "yyyy-MM-dd"
+    Save-Config $cfg
+
+    # 根据当前时间设置主题
+    $now = Get-Date -Format "HH:mm"
+    if ($now -ge $sun.sunrise -and $now -lt $sun.sunset) {
+        Set-WindowsTheme -Mode "light"
+    } else {
+        Set-WindowsTheme -Mode "dark"
     }
 
-    $scriptPath = $MyInvocation.ScriptName
-    if (-not $scriptPath) { $scriptPath = $PSCommandPath }
+    # 注册计划任务
+    $scriptPath = $PSCommandPath
     if (-not $scriptPath) { $scriptPath = Join-Path $PSScriptRoot "auto-theme.ps1" }
 
     try {
@@ -154,7 +175,7 @@ function Register-Tasks {
             Unregister-ScheduledTask -Confirm:$false
 
         # 日出切浅色
-        $srTime = [DateTime]::Parse("2000-01-01 $Sunrise")
+        $srTime = [DateTime]::Parse("2000-01-01 $($sun.sunrise)")
         $action1 = New-ScheduledTaskAction -Execute "powershell.exe" `
             -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Light"
         $trigger1 = New-ScheduledTaskTrigger -Daily -At $srTime
@@ -162,7 +183,7 @@ function Register-Tasks {
             -Description "Auto Theme: switch to Light at sunrise" -Force | Out-Null
 
         # 日落切深色
-        $ssTime = [DateTime]::Parse("2000-01-01 $Sunset")
+        $ssTime = [DateTime]::Parse("2000-01-01 $($sun.sunset)")
         $action2 = New-ScheduledTaskAction -Execute "powershell.exe" `
             -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Dark"
         $trigger2 = New-ScheduledTaskTrigger -Daily -At $ssTime
@@ -176,45 +197,11 @@ function Register-Tasks {
         Register-ScheduledTask -TaskName "AutoTheme-DailySetup" -Action $action3 -Trigger $trigger3 `
             -Description "Auto Theme: daily re-locate and update schedule" -Force | Out-Null
 
-        Write-Log "Registered: Sunrise=$Sunrise Sunset=$Sunset DailySetup=00:05"
+        Write-Log "Registered: Sunrise=$($sun.sunrise) Sunset=$($sun.sunset) DailySetup=00:05"
     } catch {
         Write-Log "WARN: Cannot register tasks (need admin): $_"
         Write-Host "Note: Schedule registration needs admin. Run as Admin to enable auto-switch."
     }
-}
-
-# ===== 根据当前时间决定主题 =====
-function Set-CurrentTheme {
-    param($Sunrise, $Sunset)
-    $now = Get-Date -Format "HH:mm"
-    if ($now -ge $Sunrise -and $now -lt $Sunset) {
-        Set-WindowsTheme -Mode "light"
-    } else {
-        Set-WindowsTheme -Mode "dark"
-    }
-}
-
-# ===== Main =====
-try {
-    if ($Dark) {
-        Set-WindowsTheme -Mode "dark"
-        exit 0
-    }
-    if ($Light) {
-        Set-WindowsTheme -Mode "light"
-        exit 0
-    }
-
-    Write-Log "====== Auto Theme Start ======"
-    $cfg = Invoke-Locate
-    $sun = Get-SunTimes -Lat $cfg.latitude -Lon $cfg.longitude
-    $cfg.sunrise = $sun.sunrise
-    $cfg.sunset  = $sun.sunset
-    $cfg.lastDate = Get-Date -Format "yyyy-MM-dd"
-    Save-Config $cfg
-
-    Set-CurrentTheme -Sunrise $sun.sunrise -Sunset $sun.sunset
-    Register-Tasks -Sunrise $sun.sunrise -Sunset $sun.sunset
 
     Write-Log "====== Setup Complete ======"
 } catch {
