@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-  Windows 自动深色/浅色模式切换工具 (V2 - 增强版)。
+  Windows 自动深色/浅色模式切换工具 (V3 - 自更新版)。
 .DESCRIPTION
   自动定位 → 获取日出日落 → 注册定时任务 → 到点自动切换。
-  切换使用 SystemParametersInfo + WM_SETTINGCHANGE + Invoke-ThemeRefresh，零闪烁 + 任务栏实时刷新。
+  每次触发都会检查日期变化并自动更新日出日落时间。
 .PARAMETER Dark    强制切深色
 .PARAMETER Light   强制切浅色
 .EXAMPLE
@@ -143,15 +143,71 @@ public class _WmBC {
     Write-Host "Switched to $label Mode"
 }
 
+# ===== 注册计划任务 =====
+function Register-Tasks {
+    param($Sun, $ScriptPath)
+    
+    try {
+        # 删除旧任务
+        Get-ScheduledTask -TaskName "AutoTheme-*" -ErrorAction SilentlyContinue |
+            Unregister-ScheduledTask -Confirm:$false
+
+        # 日出切浅色
+        $srTime = [DateTime]::Parse("2000-01-01 $($Sun.sunrise)")
+        $action1 = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Light"
+        $trigger1 = New-ScheduledTaskTrigger -Daily -At $srTime
+        Register-ScheduledTask -TaskName "AutoTheme-Sunrise" -Action $action1 -Trigger $trigger1 `
+            -Description "Auto Theme: switch to Light at sunrise" -Force | Out-Null
+
+        # 日落切深色
+        $ssTime = [DateTime]::Parse("2000-01-01 $($Sun.sunset)")
+        $action2 = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Dark"
+        $trigger2 = New-ScheduledTaskTrigger -Daily -At $ssTime
+        Register-ScheduledTask -TaskName "AutoTheme-Sunset" -Action $action2 -Trigger $trigger2 `
+            -Description "Auto Theme: switch to Dark at sunset" -Force | Out-Null
+
+        # 每日重新定位
+        $action3 = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`""
+        $trigger3 = New-ScheduledTaskTrigger -Daily -At ([DateTime]::Parse("2000-01-01 00:05"))
+        Register-ScheduledTask -TaskName "AutoTheme-DailySetup" -Action $action3 -Trigger $trigger3 `
+            -Description "Auto Theme: daily re-locate and update schedule" -Force | Out-Null
+
+        Write-Log "Registered: Sunrise=$($Sun.sunrise) Sunset=$($Sun.sunset) DailySetup=00:05"
+    } catch {
+        Write-Log "WARN: Cannot register tasks (need admin): $_"
+    }
+}
+
 # ===== Main =====
 try {
-    # 手动切换模式
-    if ($Dark) {
-        Set-WindowsTheme -Mode "dark"
-        exit 0
-    }
-    if ($Light) {
-        Set-WindowsTheme -Mode "light"
+    $scriptPath = $PSCommandPath
+    if (-not $scriptPath) { $scriptPath = Join-Path $PSScriptRoot "auto-theme.ps1" }
+
+    # 手动切换模式（-Dark 或 -Light）
+    if ($Dark -or $Light) {
+        $cfg = Get-Config
+        $today = Get-Date -Format "yyyy-MM-dd"
+        
+        # 如果日期变了，更新日出日落时间并重新注册任务
+        if ($cfg -and $cfg.lastDate -ne $today) {
+            Write-Log "Date changed, updating sunrise/sunset..."
+            $sun = Get-SunTimes -Lat $cfg.latitude -Lon $cfg.longitude
+            $cfg.sunrise = $sun.sunrise
+            $cfg.sunset = $sun.sunset
+            $cfg.lastDate = $today
+            Save-Config $cfg
+            Register-Tasks -Sun $sun -ScriptPath $scriptPath
+        }
+        
+        # 切换主题
+        if ($Dark) {
+            Set-WindowsTheme -Mode "dark"
+        } else {
+            Set-WindowsTheme -Mode "light"
+        }
         exit 0
     }
 
@@ -166,54 +222,4 @@ try {
     Save-Config $cfg
 
     # 根据当前时间设置主题
-    $now = Get-Date -Format "HH:mm"
-    if ($now -ge $sun.sunrise -and $now -lt $sun.sunset) {
-        Set-WindowsTheme -Mode "light"
-    } else {
-        Set-WindowsTheme -Mode "dark"
-    }
-
-    # 注册计划任务
-    $scriptPath = $PSCommandPath
-    if (-not $scriptPath) { $scriptPath = Join-Path $PSScriptRoot "auto-theme.ps1" }
-
-    try {
-        # 删除旧任务
-        Get-ScheduledTask -TaskName "AutoTheme-*" -ErrorAction SilentlyContinue |
-            Unregister-ScheduledTask -Confirm:$false
-
-        # 日出切浅色
-        $srTime = [DateTime]::Parse("2000-01-01 $($sun.sunrise)")
-        $action1 = New-ScheduledTaskAction -Execute "powershell.exe" `
-            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Light"
-        $trigger1 = New-ScheduledTaskTrigger -Daily -At $srTime
-        Register-ScheduledTask -TaskName "AutoTheme-Sunrise" -Action $action1 -Trigger $trigger1 `
-            -Description "Auto Theme: switch to Light at sunrise" -Force | Out-Null
-
-        # 日落切深色
-        $ssTime = [DateTime]::Parse("2000-01-01 $($sun.sunset)")
-        $action2 = New-ScheduledTaskAction -Execute "powershell.exe" `
-            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Dark"
-        $trigger2 = New-ScheduledTaskTrigger -Daily -At $ssTime
-        Register-ScheduledTask -TaskName "AutoTheme-Sunset" -Action $action2 -Trigger $trigger2 `
-            -Description "Auto Theme: switch to Dark at sunset" -Force | Out-Null
-
-        # 每日重新定位
-        $action3 = New-ScheduledTaskAction -Execute "powershell.exe" `
-            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
-        $trigger3 = New-ScheduledTaskTrigger -Daily -At ([DateTime]::Parse("2000-01-01 00:05"))
-        Register-ScheduledTask -TaskName "AutoTheme-DailySetup" -Action $action3 -Trigger $trigger3 `
-            -Description "Auto Theme: daily re-locate and update schedule" -Force | Out-Null
-
-        Write-Log "Registered: Sunrise=$($sun.sunrise) Sunset=$($sun.sunset) DailySetup=00:05"
-    } catch {
-        Write-Log "WARN: Cannot register tasks (need admin): $_"
-        Write-Host "Note: Schedule registration needs admin. Run as Admin to enable auto-switch."
-    }
-
-    Write-Log "====== Setup Complete ======"
-} catch {
-    Write-Log "ERROR: $_"
-    Write-Host "Error: $_"
-    exit 1
-}
+    $n
