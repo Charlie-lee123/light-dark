@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-  Windows 自动深色/浅色模式切换工具。
+  Windows 自动深色/浅色模式切换工具 (V2 - 增强版)。
 .DESCRIPTION
   自动定位 → 获取日出日落 → 注册定时任务 → 到点自动切换。
-  切换使用 SystemParametersInfo + WM_SETTINGCHANGE，零闪烁。
+  切换使用 SystemParametersInfo + WM_SETTINGCHANGE + Invoke-ThemeRefresh，零闪烁 + 任务栏实时刷新。
 .PARAMETER Dark    强制切深色
 .PARAMETER Light   强制切浅色
 .EXAMPLE
@@ -92,7 +92,7 @@ function Get-SunTimes {
     return @{ sunrise = $sunrise; sunset = $sunset }
 }
 
-# ===== 主题切换（零闪烁）=====
+# ===== 主题切换（零闪烁 + 任务栏实时刷新）=====
 function Set-WindowsTheme {
     param([string]$Mode)
     $value = if ($Mode -eq "dark") { 0 } else { 1 }
@@ -127,6 +127,16 @@ public class _WmBC {
 }
 "@ -ErrorAction SilentlyContinue
     try { [_WmBC]::SendMessageTimeout([IntPtr]0xFFFF, 0x001A, [IntPtr]0, "ImmersiveColorSet", 0x02, 2000, [IntPtr]0) } catch {}
+
+    # 4. Invoke-ThemeRefresh 刷新任务栏（V2 新增）
+    try {
+        $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(`
+            'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false); $p = New-Object System.Windows.Forms.Panel; $p.Size = New-Object System.Drawing.Size(1,1); $p.Visible = $false; [System.Windows.Forms.Application]::Run($p)'))
+        Start-Process powershell -ArgumentList "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encodedCommand" -WindowStyle Hidden
+        Write-Log "Invoke-ThemeRefresh: Taskbar refresh triggered"
+    } catch {
+        Write-Log "WARN: Invoke-ThemeRefresh failed: $_"
+    }
 
     $label = if ($Mode -eq "dark") { "Dark" } else { "Light" }
     Write-Log "Switched to [$label]"
