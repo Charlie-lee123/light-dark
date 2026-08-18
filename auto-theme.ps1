@@ -128,9 +128,21 @@ public class _WmBC {
     Write-Host "Switched to $label Mode"
 }
 
-# ===== 注册计划任务（整体 try-catch，权限不足时优雅降级）=====
+# ===== 注册计划任务 =====
 function Register-Tasks {
     param($Sunrise, $Sunset)
+
+    # 如果参数为空，从配置读取（管理员模式下参数可能丢失）
+    if (-not $Sunrise -or -not $Sunset) {
+        $cfg = Get-Config
+        $Sunrise = if ($Sunrise) { $Sunrise } else { $cfg.sunrise }
+        $Sunset  = if ($Sunset)  { $Sunset  } else { $cfg.sunset }
+    }
+
+    if (-not $Sunrise -or -not $Sunset) {
+        Write-Log "ERROR: No sunrise/sunset times available"
+        return
+    }
 
     $scriptPath = $MyInvocation.ScriptName
     if (-not $scriptPath) { $scriptPath = $PSCommandPath }
@@ -141,7 +153,7 @@ function Register-Tasks {
         Get-ScheduledTask -TaskName "AutoTheme-*" -ErrorAction SilentlyContinue |
             Unregister-ScheduledTask -Confirm:$false
 
-                # 日出切浅色
+        # 日出切浅色
         $srTime = [DateTime]::Parse("2000-01-01 $Sunrise")
         $action1 = New-ScheduledTaskAction -Execute "powershell.exe" `
             -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Light"
