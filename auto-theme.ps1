@@ -148,32 +148,54 @@ function Set-WindowsTheme {
     Set-ItemProperty -Path $PersonalizePath -Name "AppsUseLightTheme"   -Value $value
     Set-ItemProperty -Path $PersonalizePath -Name "SystemUsesLightTheme" -Value $value
 
-    # Send WM_SETTINGCHANGE via .NET to notify Explorer of theme change
+    # Load Win32 APIs for UI refresh
     Add-Type @"
 using System;
 using System.Runtime.InteropServices;
-public class Win32 {
-    [DllImport("user32.dll", CharSet = CharSet.Auto)]
-    public static extern IntPtr SendMessageTimeout(
-        IntPtr hWnd, uint Msg, IntPtr wParam, string lParam,
-        uint fuFlags, uint uTimeout, IntPtr lpdwResult);
+using System.Collections.Generic;
+
+public class ThemeWin32 {
+    delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lParam);
+    [DllImport("user32.dll")] static extern int GetWindowThreadProcessId(IntPtr hWnd, out int processId);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder name, int maxCount);
+    [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int val, int size);
+
+    const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+
+    public static void ApplyDarkModeToTaskbar(int useDark) {
+        int explorerPid = 0;
+        try {
+            var proc = System.Diagnostics.Process.GetProcessesByName("explorer")[0];
+            explorerPid = proc.Id;
+        } catch { return; }
+
+        EnumWindows(delegate(IntPtr hWnd, IntPtr _) {
+            int pid;
+            GetWindowThreadProcessId(hWnd, out pid);
+            if (pid == explorerPid && IsWindowVisible(hWnd)) {
+                var sb = new System.Text.StringBuilder(256);
+                GetClassName(hWnd, sb, 256);
+                string cls = sb.ToString();
+                if (cls == "Shell_TrayWnd" || cls == "Shell_SecondaryTrayWnd" || cls == "MSTaskSwWClass") {
+                    int val = useDark;
+                    DwmSetWindowAttribute(hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref val, 4);
+                }
+            }
+            return true;
+        }, IntPtr.Zero);
+    }
 }
 "@ -ErrorAction SilentlyContinue
 
     try {
-        [Win32]::SendMessageTimeout(
-            [IntPtr]0xFFFF, 0x001A, [IntPtr]0,
-            "ImmersiveColorSet", 0x0002, 2000, [IntPtr]0)
-        Write-Log "Broadcast WM_SETTINGCHANGE sent"
+        [ThemeWin32]::ApplyDarkModeToTaskbar($value)
+        Write-Log "DwmSetWindowAttribute applied to taskbar"
     } catch {
-        Write-Log "WM_SETTINGCHANGE broadcast failed: $_"
+        Write-Log "DwmSetWindowAttribute failed: $_"
     }
-
-    # Restart Explorer to force full taskbar/Start menu redraw
-    Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 500
-    Start-Process explorer
-    Write-Log "Explorer restarted"
 
     $label = if ($Mode -eq "dark") { "[Dark]" } else { "[Light]" }
     Write-Log "Switched to $label"
