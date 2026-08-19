@@ -1,9 +1,10 @@
-﻿<#
+<#
 .SYNOPSIS
-  Windows 自动深色/浅色模式切换工具 (V2 - 增强版)。
+  Windows 自动深色/浅色模式切换工具 (V3 - 无弹窗版).
 .DESCRIPTION
   自动定位 → 获取日出日落 → 注册定时任务 → 到点自动切换。
   切换使用 SystemParametersInfo + WM_SETTINGCHANGE + Invoke-ThemeRefresh，零闪烁 + 任务栏实时刷新。
+  所有计划任务均以隐藏窗口运行，不会弹出 PowerShell 窗口。
 .PARAMETER Dark    强制切深色
 .PARAMETER Light   强制切浅色
 .EXAMPLE
@@ -28,7 +29,6 @@ function Write-Log {
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $line = "[$ts] $Msg"
     $line | Out-File -FilePath $LogFile -Encoding utf8 -Append
-    Write-Host $line
 }
 
 function Get-Config {
@@ -128,19 +128,15 @@ public class _WmBC {
 "@ -ErrorAction SilentlyContinue
     try { [_WmBC]::SendMessageTimeout([IntPtr]0xFFFF, 0x001A, [IntPtr]0, "ImmersiveColorSet", 0x02, 2000, [IntPtr]0) } catch {}
 
-    # 4. Invoke-ThemeRefresh 刷新任务栏（V2 新增）
+    # 4. Invoke-ThemeRefresh 刷新任务栏（隐藏窗口）
     try {
         $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(`
             'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false); $p = New-Object System.Windows.Forms.Panel; $p.Size = New-Object System.Drawing.Size(1,1); $p.Visible = $false; [System.Windows.Forms.Application]::Run($p)'))
-        Start-Process powershell -ArgumentList "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encodedCommand" -WindowStyle Hidden
-        Write-Log "Invoke-ThemeRefresh: Taskbar refresh triggered"
-    } catch {
-        Write-Log "WARN: Invoke-ThemeRefresh failed: $_"
-    }
+        Start-Process powershell -ArgumentList "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $encodedCommand" -WindowStyle Hidden
+    } catch {}
 
     $label = if ($Mode -eq "dark") { "Dark" } else { "Light" }
     Write-Log "Switched to [$label]"
-    Write-Host "Switched to $label Mode"
 }
 
 # ===== Main =====
@@ -182,25 +178,25 @@ try {
         Get-ScheduledTask -TaskName "AutoTheme-*" -ErrorAction SilentlyContinue |
             Unregister-ScheduledTask -Confirm:$false
 
-        # 日出切浅色
+        # 日出切浅色（隐藏窗口）
         $srTime = [DateTime]::Parse("2000-01-01 $($sun.sunrise)")
         $action1 = New-ScheduledTaskAction -Execute "powershell.exe" `
-            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Light"
+            -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`" -Light"
         $trigger1 = New-ScheduledTaskTrigger -Daily -At $srTime
         Register-ScheduledTask -TaskName "AutoTheme-Sunrise" -Action $action1 -Trigger $trigger1 `
             -Description "Auto Theme: switch to Light at sunrise" -Force | Out-Null
 
-        # 日落切深色
+        # 日落切深色（隐藏窗口）
         $ssTime = [DateTime]::Parse("2000-01-01 $($sun.sunset)")
         $action2 = New-ScheduledTaskAction -Execute "powershell.exe" `
-            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Dark"
+            -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`" -Dark"
         $trigger2 = New-ScheduledTaskTrigger -Daily -At $ssTime
         Register-ScheduledTask -TaskName "AutoTheme-Sunset" -Action $action2 -Trigger $trigger2 `
             -Description "Auto Theme: switch to Dark at sunset" -Force | Out-Null
 
-        # 每日重新定位
+        # 每日重新定位（隐藏窗口）
         $action3 = New-ScheduledTaskAction -Execute "powershell.exe" `
-            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
+            -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`""
         $trigger3 = New-ScheduledTaskTrigger -Daily -At ([DateTime]::Parse("2000-01-01 00:05"))
         Register-ScheduledTask -TaskName "AutoTheme-DailySetup" -Action $action3 -Trigger $trigger3 `
             -Description "Auto Theme: daily re-locate and update schedule" -Force | Out-Null
@@ -208,13 +204,10 @@ try {
         Write-Log "Registered: Sunrise=$($sun.sunrise) Sunset=$($sun.sunset) DailySetup=00:05"
     } catch {
         Write-Log "WARN: Cannot register tasks (need admin): $_"
-        Write-Host "Note: Schedule registration needs admin. Run as Admin to enable auto-switch."
     }
 
     Write-Log "====== Setup Complete ======"
 } catch {
     Write-Log "ERROR: $_"
-    Write-Host "Error: $_"
     exit 1
 }
-
