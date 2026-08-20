@@ -1,10 +1,11 @@
 <#
 .SYNOPSIS
-  Windows 自动深色/浅色模式切换工具 (V3 - 无弹窗版).
+  Windows 自动深色/浅色模式切换工具 (V4 - 开机补切换版).
 .DESCRIPTION
   自动定位 → 获取日出日落 → 注册定时任务 → 到点自动切换。
   切换使用 SystemParametersInfo + WM_SETTINGCHANGE + Invoke-ThemeRefresh，零闪烁 + 任务栏实时刷新。
   所有计划任务均以隐藏窗口运行，不会弹出 PowerShell 窗口。
+  开机时自动检查并补切换（解决关机错过日出/日落的问题）。
 .PARAMETER Dark    强制切深色
 .PARAMETER Light   强制切浅色
 .EXAMPLE
@@ -111,32 +112,92 @@ public class _SysRefresh {
     public static void Do() {
         SystemParametersInfo(0x002E, 0, IntPtr.Zero, 0x03);
         SystemParametersInfo(0x002A, 0, IntPtr.Zero, 0x03);
-        SystemParametersInfo(0x0049, 0, IntPtr.Zero, 0x03);
     }
 }
-"@ -ErrorAction SilentlyContinue
-    try { [_SysRefresh]::Do() } catch {}
+"@
+    [_SysRefresh]::Do()
 
-    # 3. WM_SETTINGCHANGE 广播
-    Add-Type @"
+    # 3. 任务栏刷新（通过重启 explorer shell component）
+    Invoke-ThemeRefresh
+
+    Write-Log "Switched to [$($Mode.ToUpper())]"
+}
+
+# ===== 任务栏刷新 =====
+function Invoke-ThemeRefresh {
+    try {
+        # 方法1: 通过 Rundll32 刷新
+        Start-Process "rundll32.exe" -ArgumentList "user32.dll,UpdatePerUserSystemParameters" -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue
+
+        # 方法2: 通过 powershell 刷新任务栏
+        $refreshScript = @'
+Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
-public class _WmBC {
-    [DllImport("user32.dll", CharSet=CharSet.Auto)]
-    public static extern void SendMessageTimeout(IntPtr h, uint m, IntPtr w, string l, uint f, uint t, IntPtr r);
+public class TaskbarRefresh {
+    [DllImport("shell32.dll")]
+    public static extern void SHChangeNotify(int eventId, int flags, IntPtr item1, IntPtr item2);
 }
-"@ -ErrorAction SilentlyContinue
-    try { [_WmBC]::SendMessageTimeout([IntPtr]0xFFFF, 0x001A, [IntPtr]0, "ImmersiveColorSet", 0x02, 2000, [IntPtr]0) } catch {}
+"@
+# SHCNE_ASSOCCHANGED = 0x08000000, SHCNF_IDLIST = 0
+[TaskbarRefresh]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+'@
+        Start-Process "powershell" -ArgumentList "-NoProfile -WindowStyle Hidden -Command `"$refreshScript`"" -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue
 
-    # 4. Invoke-ThemeRefresh 刷新任务栏（隐藏窗口）
-    try {
-        $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(`
-            'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false); $p = New-Object System.Windows.Forms.Panel; $p.Size = New-Object System.Drawing.Size(1,1); $p.Visible = $false; [System.Windows.Forms.Application]::Run($p)'))
-        Start-Process powershell -ArgumentList "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $encodedCommand" -WindowStyle Hidden
-    } catch {}
+        Write-Log "Invoke-ThemeRefresh: Taskbar refresh triggered"
+    } catch {
+        Write-Log "Invoke-ThemeRefresh failed: $_"
+    }
+}
 
-    $label = if ($Mode -eq "dark") { "Dark" } else { "Light" }
-    Write-Log "Switched to [$label]"
+# ===== 开机补切换检查 =====
+function Invoke-BootCheck {
+    # 检查今天的日出/日落是否已经过了，如果过了就补切换
+    $cfg = Get-Config
+    if (-not $cfg -or -not $cfg.sunrise -or -not $cfg.sunset) {
+        Write-Log "BootCheck: No config found, skipping"
+        return
+    }
+
+    $today = Get-Date -Format "yyyy-MM-dd"
+    if ($cfg.lastDate -ne $today) {
+        Write-Log "BootCheck: Date changed (lastDate=$($cfg.lastDate)), will be handled by DailySetup"
+        return
+    }
+
+    $now = Get-Date -Format "HH:mm"
+    $lastSwitch = $cfg.lastSwitch
+    $lastDate = $cfg.lastSwitchDate
+
+    # 如果今天已经切换过，跳过
+    if ($lastDate -eq $today) {
+        Write-Log "BootCheck: Already switched today at $lastSwitch, skipping"
+        return
+    }
+
+    # 检查是否错过了今天的日出/日落
+    if ($now -ge $cfg.sunrise -and $now -ge $cfg.sunset) {
+        # 日出和日落都过了，应该切深色
+        Write-Log "BootCheck: Missed both sunrise ($($cfg.sunrise)) and sunset ($($cfg.sunset)), switching to Dark"
+        Set-WindowsTheme -Mode "dark"
+        $cfg.lastSwitch = $now
+        $cfg.lastSwitchDate = $today
+        Save-Config $cfg
+    } elseif ($now -ge $cfg.sunrise -and $now -lt $cfg.sunset) {
+        # 日出过了但日落还没到，应该切浅色
+        Write-Log "BootCheck: Missed sunrise ($($cfg.sunrise)), switching to Light"
+        Set-WindowsTheme -Mode "light"
+        $cfg.lastSwitch = $now
+        $cfg.lastSwitchDate = $today
+        Save-Config $cfg
+    } else {
+        # 还没到日出，切深色
+        Write-Log "BootCheck: Before sunrise ($($cfg.sunrise)), switching to Dark"
+        Set-WindowsTheme -Mode "dark"
+        $cfg.lastSwitch = $now
+        $cfg.lastSwitchDate = $today
+        Save-Config $cfg
+    }
 }
 
 # ===== Main =====
@@ -144,10 +205,24 @@ try {
     # 手动切换模式
     if ($Dark) {
         Set-WindowsTheme -Mode "dark"
+        # 记录切换时间
+        $cfg = Get-Config
+        if ($cfg) {
+            $cfg.lastSwitch = Get-Date -Format "HH:mm"
+            $cfg.lastSwitchDate = Get-Date -Format "yyyy-MM-dd"
+            Save-Config $cfg
+        }
         exit 0
     }
     if ($Light) {
         Set-WindowsTheme -Mode "light"
+        # 记录切换时间
+        $cfg = Get-Config
+        if ($cfg) {
+            $cfg.lastSwitch = Get-Date -Format "HH:mm"
+            $cfg.lastSwitchDate = Get-Date -Format "yyyy-MM-dd"
+            Save-Config $cfg
+        }
         exit 0
     }
 
@@ -168,6 +243,11 @@ try {
     } else {
         Set-WindowsTheme -Mode "dark"
     }
+
+    # 记录切换时间
+    $cfg.lastSwitch = $now
+    $cfg.lastSwitchDate = Get-Date -Format "yyyy-MM-dd"
+    Save-Config $cfg
 
     # 注册计划任务
     $scriptPath = $PSCommandPath
@@ -201,7 +281,15 @@ try {
         Register-ScheduledTask -TaskName "AutoTheme-DailySetup" -Action $action3 -Trigger $trigger3 `
             -Description "Auto Theme: daily re-locate and update schedule" -Force | Out-Null
 
-        Write-Log "Registered: Sunrise=$($sun.sunrise) Sunset=$($sun.sunset) DailySetup=00:05"
+        # 开机补切换检查（隐藏窗口）
+        $action4 = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`""
+        # 使用 LOGON 触发器，用户登录时运行
+        $trigger4 = New-ScheduledTaskTrigger -AtLogOn
+        Register-ScheduledTask -TaskName "AutoTheme-BootCheck" -Action $action4 -Trigger $trigger4 `
+            -Description "Auto Theme: check and apply theme on boot" -Force | Out-Null
+
+        Write-Log "Registered: Sunrise=$($sun.sunrise) Sunset=$($sun.sunset) DailySetup=00:05 BootCheck=AtLogOn"
     } catch {
         Write-Log "WARN: Cannot register tasks (need admin): $_"
     }
