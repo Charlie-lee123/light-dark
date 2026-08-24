@@ -119,16 +119,25 @@ function Set-WindowsTheme {
     $value = if ($Mode -eq "dark") { 0 } else { 1 }
     Set-ItemProperty -Path $PersonalizePath -Name "AppsUseLightTheme" -Value $value
     Set-ItemProperty -Path $PersonalizePath -Name "SystemUsesLightTheme" -Value $value
+    # 发送系统刷新消息
     try {
         Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
-public class _SysRefresh {
+public class ThemeRefresh {
     [DllImport("user32.dll")]
     public static extern bool SystemParametersInfo(int a, int b, IntPtr c, int d);
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
 }
 "@
-        [_SysRefresh]::SystemParametersInfo(0x002E, 0, [IntPtr]::Zero, 0x03)
+        # 刷新系统参数
+        [ThemeRefresh]::SystemParametersInfo(0x002E, 0, [IntPtr]::Zero, 0x03)
+        # 广播 WM_SETTINGCHANGE
+        $HWND_BROADCAST = [IntPtr]0xffff
+        $WM_SETTINGCHANGE = [System.UInt32]0x001A
+        $result = [UIntPtr]::Zero
+        [ThemeRefresh]::SendMessageTimeout($HWND_BROADCAST, $WM_SETTINGCHANGE, [UIntPtr]::Zero, "Personalize", 2, 3000, [ref]$result) | Out-Null
     } catch {}
     Write-Log "Switched to [$($Mode.ToUpper())]"
 }
