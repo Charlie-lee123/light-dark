@@ -137,7 +137,7 @@ public class ThemeRefresh {
         $HWND_BROADCAST = [IntPtr]0xffff
         $WM_SETTINGCHANGE = [System.UInt32]0x001A
         $result = [UIntPtr]::Zero
-        [ThemeRefresh]::SendMessageTimeout($HWND_BROADCAST, $WM_SETTINGCHANGE, [UIntPtr]::Zero, "Personalize", 2, 3000, [ref]$result) | Out-Null
+                [ThemeRefresh]::SendMessageTimeout($HWND_BROADCAST, $WM_SETTINGCHANGE, [UIntPtr]::Zero, "ImmersiveColorSet", 2, 3000, [ref]$result) | Out-Null
     } catch {}
     Write-Log "Switched to [$($Mode.ToUpper())]"
 }
