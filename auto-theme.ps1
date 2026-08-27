@@ -155,26 +155,33 @@ function Invoke-BootCheck {
     $now = Get-Date -Format "HH:mm"
     $today = Get-Date -Format "yyyy-MM-dd"
 
-    if ($cfg.lastSwitchDate -eq $today) {
-        Write-Log "BootCheck: Already switched today at $($cfg.lastSwitch), skipping"
+    # 判断当前应该是什么主题
+    $shouldBeDark = $false
+    if ($now -ge $cfg.sunset -or $now -lt $cfg.sunrise) {
+        $shouldBeDark = $true
+    }
+
+    # 检查当前实际主题
+    $light = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name 'AppsUseLightTheme').AppsUseLightTheme
+    $isCurrentlyLight = ($light -eq 1)
+
+    # 如果主题正确，跳过
+    if (($shouldBeDark -and -not $isCurrentlyLight) -or (-not $shouldBeDark -and $isCurrentlyLight)) {
+        Write-Log "BootCheck: Theme is correct (should=$(if ($shouldBeDark) {'Dark'} else {'Light'}), actual=$(if ($isCurrentlyLight) {'Light'} else {'Dark'})), skipping"
         return
     }
 
-    if ($now -ge $cfg.sunrise -and $now -lt $cfg.sunset) {
-        Write-Log "BootCheck: Missed sunrise ($($cfg.sunrise)), switching to Light"
-        Set-WindowsTheme -Mode "light"
-        $cfg.lastSwitch = $now
-        $cfg.lastSwitchDate = $today
-        Save-Config $cfg
-    } elseif ($now -ge $cfg.sunset) {
-        Write-Log "BootCheck: Missed sunset ($($cfg.sunset)), switching to Dark"
+    # 主题不正确，切换
+    if ($shouldBeDark) {
+        Write-Log "BootCheck: Incorrect theme, switching to Dark"
         Set-WindowsTheme -Mode "dark"
-        $cfg.lastSwitch = $now
-        $cfg.lastSwitchDate = $today
-        Save-Config $cfg
     } else {
-        Write-Log "BootCheck: Before sunrise ($($cfg.sunrise)), no switch needed"
+        Write-Log "BootCheck: Incorrect theme, switching to Light"
+        Set-WindowsTheme -Mode "light"
     }
+    $cfg.lastSwitch = $now
+    $cfg.lastSwitchDate = $today
+    Save-Config $cfg
 }
 
 try {
