@@ -211,17 +211,17 @@ try {
     # 网络连接触发：重新获取日出日落并补切换（解决开机时网络未就绪）
     if ($NetworkConnected) {
         Write-Log "NetworkConnected trigger: refreshing sun times"
+        $cfg = Get-Config
         try {
-            $cfg = Invoke-Locate
-            $sun = Get-SunTimes -Lat $cfg.latitude -Lon $cfg.longitude
+            $located = Invoke-Locate
+            $sun = Get-SunTimes -Lat $located.latitude -Lon $located.longitude
             $cfg.sunrise = $sun.sunrise
             $cfg.sunset = $sun.sunset
             $cfg.lastDate = Get-Date -Format "yyyy-MM-dd"
             Save-Config $cfg
             Write-Log "NetworkConnected: Updated sun times - Sunrise=$($sun.sunrise) Sunset=$($sun.sunset)"
         } catch {
-            Write-Log "NetworkConnected: Failed to update sun times: $_"
-            exit 1
+            Write-Log "NetworkConnected: Failed to update sun times, using cached values: Sunrise=$($cfg.sunrise) Sunset=$($cfg.sunset)"
         }
         # 补切换
         Invoke-BootCheck
