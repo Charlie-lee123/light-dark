@@ -1,15 +1,18 @@
 ﻿<#
 .SYNOPSIS
-  Windows 自动深色/浅色模式切换工具 (V5 - 开机补切换修复版).
+  Windows 自动深色/浅色模式切换工具 (V6 - 网络连接触发版).
 .DESCRIPTION
   自动定位 → 获取日出日落 → 注册定时任务 → 到点自动切换。
   开机时自动检查并补切换（解决关机错过日出/日落的问题）。
-.PARAMETER Dark    强制切深色
-.PARAMETER Light   强制切浅色
+  网络连接时自动重新获取日出日落时间（解决开机时网络未就绪的问题）。
+.PARAMETER Dark              强制切深色
+.PARAMETER Light             强制切浅色
+.PARAMETER NetworkConnected  网络连接触发，重新获取日出日落并补切换
 #>
 param(
     [switch]$Dark,
-    [switch]$Light
+    [switch]$Light,
+    [switch]$NetworkConnected
 )
 
 $ErrorActionPreference = "Stop"
@@ -196,7 +199,27 @@ try {
         exit 0
     }
 
-    Write-Log "====== Auto Theme Start ======"
+        Write-Log "====== Auto Theme Start ======"
+
+    # 网络连接触发：重新获取日出日落并补切换（解决开机时网络未就绪）
+    if ($NetworkConnected) {
+        Write-Log "NetworkConnected trigger: refreshing sun times"
+        try {
+            $cfg = Invoke-Locate
+            $sun = Get-SunTimes -Lat $cfg.latitude -Lon $cfg.longitude
+            $cfg.sunrise = $sun.sunrise
+            $cfg.sunset = $sun.sunset
+            $cfg.lastDate = Get-Date -Format "yyyy-MM-dd"
+            Save-Config $cfg
+            Write-Log "NetworkConnected: Updated sun times - Sunrise=$($sun.sunrise) Sunset=$($sun.sunset)"
+        } catch {
+            Write-Log "NetworkConnected: Failed to update sun times: $_"
+            exit 1
+        }
+        # 补切换
+        Invoke-BootCheck
+        exit 0
+    }
 
     $cfg = Invoke-Locate
     $sun = Get-SunTimes -Lat $cfg.latitude -Lon $cfg.longitude
@@ -240,11 +263,42 @@ try {
         $t3 = New-ScheduledTaskTrigger -Daily -At ([DateTime]::Parse("2000-01-01 00:05"))
         Register-ScheduledTask -TaskName "AutoTheme-DailySetup" -Action $a3 -Trigger $t3 -Force | Out-Null
 
-                # BootCheck 通过 VBS 包装启动，彻底隐藏窗口
+                        # BootCheck 通过 VBS 包装启动，彻底隐藏窗口
         $vbsPath = Join-Path $PSScriptRoot "run-boot.vbs"
         $a4 = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$vbsPath`""
         $t4 = New-ScheduledTaskTrigger -AtLogOn
         Register-ScheduledTask -TaskName "AutoTheme-BootCheck" -Action $a4 -Trigger $t4 -Force | Out-Null
+
+        # WiFi/网络连接时触发（解决开机时网络未就绪的问题）
+        $vbsNet = Join-Path $PSScriptRoot "run-netconnected.vbs"
+        $a5 = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$vbsNet`""
+        # 使用事件触发器：Microsoft-Windows-NetworkProfile/Operational 事件ID 10000（网络已连接）
+        $t5 = New-ScheduledTaskTrigger -AtLogOn  # 先创建基础触发器
+        $t5xml = $t5.ExportXml()
+        # 替换为事件触发器（XML方式）
+        $eventTriggerXml = @"
+<Triggers xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <EventTrigger>
+    <Enabled>true</Enabled>
+    <Subscription>
+      <![CDATA[
+        <QueryList>
+          <Query Id="0" Path="Microsoft-Windows-NetworkProfile/Operational">
+            <Select Path="Microsoft-Windows-NetworkProfile/Operational">*[System[(EventID=10000)]]</Select>
+          </Query>
+        </QueryList>
+      ]]>
+    </Subscription>
+    <Delay>PT10S</Delay>
+  </EventTrigger>
+</Triggers>
+"@
+        Register-ScheduledTask -TaskName "AutoTheme-NetworkCheck" -Action $a5 -Trigger (New-ScheduledTaskTrigger -AtLogOn) -Force | Out-Null
+        # 用 XML 注册事件触发器
+        $taskXml = Get-ScheduledTask -TaskName "AutoTheme-NetworkCheck" | Export-ScheduledTask
+        $taskXml = $taskXml -replace '<Triggers>.*?</Triggers>', $eventTriggerXml
+        Unregister-ScheduledTask -TaskName "AutoTheme-NetworkCheck" -Confirm:$false -ErrorAction SilentlyContinue
+        Register-ScheduledTask -TaskName "AutoTheme-NetworkCheck" -Xml $taskXml -Force | Out-Null
 
         Write-Log "Registered all tasks: Sunrise=$($sun.sunrise) Sunset=$($sun.sunset)"
     } catch {
