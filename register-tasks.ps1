@@ -1,22 +1,30 @@
-﻿# 注册计划任务
-try {
-    Get-ScheduledTask -TaskName 'AutoTheme-*' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
+# 手动注册任务计划（需要管理员权限）
+# 用法：以管理员身份运行 PowerShell，然后执行此脚本
 
-    $scriptPath = 'C:\Users\Lenovo\miclaw\project\light-dark\auto-theme.ps1'
+Write-Host "开始注册任务计划..."
 
-    # 日出任务 - 06:33
-    $srTime = [DateTime]::Parse('2000-01-01 06:33')
-    $a1 = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File '$scriptPath' -Light"
-    $t1 = New-ScheduledTaskTrigger -Daily -At $srTime
-    Register-ScheduledTask -TaskName 'AutoTheme-Sunrise' -Action $a1 -Trigger $t1 -Force -RunLevel Highest | Out-Null
+# 注册 Sunrise 任务
+Unregister-ScheduledTask -TaskName 'AutoTheme-Sunrise' -Confirm:$false -ErrorAction SilentlyContinue
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "& ''C:\Users\Lenovo\miclaw\project\light-dark\auto-theme.ps1'' -Light"'
+$trigger = New-ScheduledTaskTrigger -Daily -At '06:27'
+Register-ScheduledTask -TaskName 'AutoTheme-Sunrise' -Action $action -Trigger $trigger -Description 'Auto Theme - Sunrise Switch' -Force
+Write-Host "✅ Sunrise 任务已注册: 06:27"
 
-    # 日落任务 - 19:40
-    $ssTime = [DateTime]::Parse('2000-01-01 19:40')
-    $a2 = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File '$scriptPath' -Dark"
-    $t2 = New-ScheduledTaskTrigger -Daily -At $ssTime
-    Register-ScheduledTask -TaskName 'AutoTheme-Sunset' -Action $a2 -Trigger $t2 -Force -RunLevel Highest | Out-Null
+# 注册 Sunset 任务
+Unregister-ScheduledTask -TaskName 'AutoTheme-Sunset' -Confirm:$false -ErrorAction SilentlyContinue
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "& ''C:\Users\Lenovo\miclaw\project\light-dark\auto-theme.ps1'' -Dark"'
+$trigger = New-ScheduledTaskTrigger -Daily -At '19:23'
+Register-ScheduledTask -TaskName 'AutoTheme-Sunset' -Action $action -Trigger $trigger -Description 'Auto Theme - Sunset Switch' -Force
+Write-Host "✅ Sunset 任务已注册: 19:23"
 
-    Write-Host 'SUCCESS: Tasks registered'
-} catch {
-    Write-Host 'ERROR:' $_.Exception.Message
-}
+# 注册 DailySetup 任务
+Unregister-ScheduledTask -TaskName 'AutoTheme-DailySetup' -Confirm:$false -ErrorAction SilentlyContinue
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "& ''C:\Users\Lenovo\miclaw\project\light-dark\auto-theme.ps1'' -RegisterAll"'
+$trigger = New-ScheduledTaskTrigger -Daily -At '00:05'
+Register-ScheduledTask -TaskName 'AutoTheme-DailySetup' -Action $action -Trigger $trigger -Description 'Auto Theme - Daily Setup' -Force
+Write-Host "✅ DailySetup 任务已注册: 00:05"
+
+Write-Host ""
+Write-Host "所有任务已注册完成！"
+Write-Host "Sunrise: 06:27"
+Write-Host "Sunset: 19:23"

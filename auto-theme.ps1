@@ -65,10 +65,8 @@ function Save-Config {
 function Invoke-Locate {
     $cfg = Get-Config
     $today = Get-Date -Format "yyyy-MM-dd"
-    if ($cfg -and $cfg.lastLocate -eq $today -and $cfg.latitude -ne 0) {
-        Write-Log "Using cached location: $($cfg.city)"
-        return $cfg
-    }
+    # 每次触发都重新定位（使用高德地理编码获取精确坐标）
+    # 不再使用缓存，确保位置信息始终最新
     if (-not $cfg) {
         $cfg = [PSCustomObject]@{latitude=0;longitude=0;city="";sunrise="";sunset="";darkMode=$true;lastDate="";lastLocate="";lastSwitch="";lastSwitchDate=""}
     }
@@ -79,32 +77,58 @@ function Invoke-Locate {
             $cfg | Add-Member -NotePropertyName $field -NotePropertyValue "" -Force
         }
     }
-                        Write-Log "Locating..."
-    # 尝试通过高德 API 定位
+                                                Write-Log "Locating..."
+    $amapKey = "825c925879372262c060fe4e2b32a188"
+
+    # 优先用 config.json 中的 address 做地理编码（精确到地点）
+    $address = ""
+    if ($cfg.PSObject.Properties.Name -contains "address") {
+        $address = $cfg.address
+    }
+    if ($address) {
+        try {
+            $encodedAddr = [System.Uri]::EscapeDataString($address)
+            $geoResp = Invoke-RestMethod -Uri "https://restapi.amap.com/v3/geocode/geo?key=$amapKey&address=$encodedAddr" -TimeoutSec 8
+            if ($geoResp.status -eq "1" -and $geoResp.geocodes -and $geoResp.geocodes.Count -gt 0) {
+                $locParts = $geoResp.geocodes[0].location.Split(",")
+                $cfg.longitude = [double]$locParts[0]
+                $cfg.latitude = [double]$locParts[1]
+                $cfg.city = "$address, CN"
+                $cfg.lastLocate = $today
+                Save-Config $cfg
+                Write-Log "Located via Amap Geocoding: $address ($($cfg.latitude), $($cfg.longitude))"
+                return $cfg
+            }
+        } catch {
+            Write-Log "Amap Geocoding failed: $_"
+        }
+    }
+
+    # fallback: 高德 IP 定位
     try {
-        $amapKey = "825c925879372262c060fe4e2b32a188"
-        $amapResp = Invoke-RestMethod -Uri "https://restapi.amap.com/v3/ip?key=$amapKey" -TimeoutSec 8
-        if ($amapResp.status -eq "1" -and $amapResp.location) {
-            $locParts = $amapResp.location.Split(",")
+        $ipResp = Invoke-RestMethod -Uri "https://restapi.amap.com/v3/ip?key=$amapKey" -TimeoutSec 8
+        if ($ipResp.status -eq "1" -and $ipResp.location) {
+            $locParts = $ipResp.location.Split(",")
             $cfg.longitude = [double]$locParts[0]
             $cfg.latitude = [double]$locParts[1]
-            $city = if ($amapResp.city) { $amapResp.city } else { $amapResp.province }
+            $city = if ($ipResp.city) { $ipResp.city } else { $ipResp.province }
             $cfg.city = "$city, CN"
             $cfg.lastLocate = $today
-            Write-Log "Located via Amap: $($cfg.city)"
+            Save-Config $cfg
+            Write-Log "Located via Amap IP: $($cfg.city)"
             return $cfg
         }
     } catch {
-        Write-Log "Amap locate failed: $_"
+        Write-Log "Amap IP locate failed: $_"
     }
-    # 高德失败，使用之前保存的位置
+
+    # 最后 fallback: 使用上次保存的位置
     if ($cfg.latitude -ne 0 -and $cfg.longitude -ne 0) {
         Write-Log "Using last known location: $($cfg.city) ($($cfg.latitude), $($cfg.longitude))"
         $cfg.lastLocate = $today
         return $cfg
     }
     throw "Cannot locate - no saved coordinates"
-    return $cfg
 }
 
 function Get-SunTimes {
