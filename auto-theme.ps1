@@ -77,52 +77,52 @@ function Invoke-Locate {
             $cfg | Add-Member -NotePropertyName $field -NotePropertyValue "" -Force
         }
     }
-                                                Write-Log "Locating..."
+                                                                                                Write-Log "Locating..."
     $amapKey = "825c925879372262c060fe4e2b32a188"
 
-    # 优先用 config.json 中的 address 做地理编码（精确到地点）
-    $address = ""
-    if ($cfg.PSObject.Properties.Name -contains "address") {
-        $address = $cfg.address
-    }
-    if ($address) {
-        try {
-            $encodedAddr = [System.Uri]::EscapeDataString($address)
-            $geoResp = Invoke-RestMethod -Uri "https://restapi.amap.com/v3/geocode/geo?key=$amapKey&address=$encodedAddr" -TimeoutSec 8
-            if ($geoResp.status -eq "1" -and $geoResp.geocodes -and $geoResp.geocodes.Count -gt 0) {
-                $locParts = $geoResp.geocodes[0].location.Split(",")
-                $cfg.longitude = [double]$locParts[0]
-                $cfg.latitude = [double]$locParts[1]
-                $cfg.city = "$address, CN"
-                $cfg.lastLocate = $today
-                Save-Config $cfg
-                Write-Log "Located via Amap Geocoding: $address ($($cfg.latitude), $($cfg.longitude))"
-                return $cfg
-            }
-        } catch {
-            Write-Log "Amap Geocoding failed: $_"
-        }
-    }
-
-    # fallback: 高德 IP 定位
+    # 1) 高德 IP 定位（全自动，无需配置地址）
     try {
         $ipResp = Invoke-RestMethod -Uri "https://restapi.amap.com/v3/ip?key=$amapKey" -TimeoutSec 8
-        if ($ipResp.status -eq "1" -and $ipResp.location) {
-            $locParts = $ipResp.location.Split(",")
-            $cfg.longitude = [double]$locParts[0]
-            $cfg.latitude = [double]$locParts[1]
-            $city = if ($ipResp.city) { $ipResp.city } else { $ipResp.province }
-            $cfg.city = "$city, CN"
-            $cfg.lastLocate = $today
-            Save-Config $cfg
-            Write-Log "Located via Amap IP: $($cfg.city)"
-            return $cfg
+        if ($ipResp.status -eq "1") {
+            $city = if ($ipResp.city) { $ipResp.city } elseif ($ipResp.province) { $ipResp.province } else { "" }
+
+            # IP 定位直接返回坐标
+            if ($ipResp.location) {
+                $locParts = $ipResp.location.Split(",")
+                $cfg.longitude = [double]$locParts[0]
+                $cfg.latitude = [double]$locParts[1]
+                $cfg.city = "$city, CN"
+                $cfg.lastLocate = $today
+                Save-Config $cfg
+                Write-Log "Located via Amap IP: $city ($($cfg.latitude), $($cfg.longitude))"
+                return $cfg
+            }
+
+            # IP 定位只有城市名没有坐标，用地理编码获取
+            if ($city) {
+                try {
+                    $encodedAddr = [System.Uri]::EscapeDataString($city)
+                    $geoResp = Invoke-RestMethod -Uri "https://restapi.amap.com/v3/geocode/geo?key=$amapKey&address=$encodedAddr" -TimeoutSec 8
+                    if ($geoResp.status -eq "1" -and $geoResp.geocodes -and $geoResp.geocodes.Count -gt 0) {
+                        $locParts = $geoResp.geocodes[0].location.Split(",")
+                        $cfg.longitude = [double]$locParts[0]
+                        $cfg.latitude = [double]$locParts[1]
+                        $cfg.city = "$city, CN"
+                        $cfg.lastLocate = $today
+                        Save-Config $cfg
+                        Write-Log "Located via Amap IP+Geocode: $city ($($cfg.latitude), $($cfg.longitude))"
+                        return $cfg
+                    }
+                } catch {
+                    Write-Log "Amap Geocode fallback failed: $_"
+                }
+            }
         }
     } catch {
-        Write-Log "Amap IP locate failed: $_"
+        Write-Log "Amap locate failed: $_"
     }
 
-    # 最后 fallback: 使用上次保存的位置
+    # 2) fallback: 用上次保存的位置
     if ($cfg.latitude -ne 0 -and $cfg.longitude -ne 0) {
         Write-Log "Using last known location: $($cfg.city) ($($cfg.latitude), $($cfg.longitude))"
         $cfg.lastLocate = $today
