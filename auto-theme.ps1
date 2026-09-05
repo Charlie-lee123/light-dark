@@ -132,13 +132,36 @@ function Invoke-Locate {
 }
 
 function Get-SunTimes {
-    param($Lat, $Lon)
-    $resp = Invoke-RestMethod -Uri "https://api.sunrise-sunset.org/json?lat=$Lat&lng=$Lon&formatted=0" -TimeoutSec 10
-    $localOffset = [TimeSpan]::FromHours(8)
-    $sunrise = [DateTimeOffset]::Parse($resp.results.sunrise).ToOffset($localOffset).ToString("HH:mm")
-    $sunset = [DateTimeOffset]::Parse($resp.results.sunset).ToOffset($localOffset).ToString("HH:mm")
-    Write-Log "Sun: sunrise=$sunrise sunset=$sunset"
-    return @{ sunrise=$sunrise; sunset=$sunset }
+    param($Lat, $Lon, $City = "")
+
+    # API 1: sunrise-sunset.org（精确坐标）
+    try {
+        $resp = Invoke-RestMethod -Uri "https://api.sunrise-sunset.org/json?lat=$Lat&lng=$Lon&formatted=0" -TimeoutSec 10
+        $localOffset = [TimeSpan]::FromHours(8)
+        $sunrise = [DateTimeOffset]::Parse($resp.results.sunrise).ToOffset($localOffset).ToString("HH:mm")
+        $sunset = [DateTimeOffset]::Parse($resp.results.sunset).ToOffset($localOffset).ToString("HH:mm")
+        Write-Log "Sun: sunrise=$sunrise sunset=$sunset (via sunrise-sunset.org)"
+        return @{ sunrise=$sunrise; sunset=$sunset }
+    } catch {
+        Write-Log "sunrise-sunset.org failed: $_"
+    }
+
+    # API 2: wttr.in（备用，通过城市名）
+    $cityQuery = if ($City) { $City } else { "Chongqing" }
+    try {
+        $wttrResp = Invoke-RestMethod -Uri "https://wttr.in/$([System.Uri]::EscapeDataString($cityQuery))?format=%S+%s" -TimeoutSec 10
+        $parts = $wttrResp.Trim() -split '\s+'
+        if ($parts.Count -eq 2) {
+            $sunrise = $parts[0].Substring(0, 5)  # HH:mm
+            $sunset = $parts[1].Substring(0, 5)
+            Write-Log "Sun: sunrise=$sunrise sunset=$sunset (via wttr.in)"
+            return @{ sunrise=$sunrise; sunset=$sunset }
+        }
+    } catch {
+        Write-Log "wttr.in failed: $_"
+    }
+
+    throw "Cannot get sun times from any API"
 }
 
 function Set-WindowsTheme {
@@ -238,7 +261,7 @@ try {
         $cfg = Get-Config
         try {
             $located = Invoke-Locate
-            $sun = Get-SunTimes -Lat $located.latitude -Lon $located.longitude
+            $sun = Get-SunTimes -Lat $located.latitude -Lon $located.longitude -City $cfg.city
             $cfg.sunrise = $sun.sunrise
             $cfg.sunset = $sun.sunset
             $cfg.lastDate = Get-Date -Format "yyyy-MM-dd"
@@ -253,7 +276,7 @@ try {
     }
 
     $cfg = Invoke-Locate
-    $sun = Get-SunTimes -Lat $cfg.latitude -Lon $cfg.longitude
+    $sun = Get-SunTimes -Lat $cfg.latitude -Lon $cfg.longitude -City $cfg.city
     $cfg.sunrise = $sun.sunrise
     $cfg.sunset = $sun.sunset
     $cfg.lastDate = Get-Date -Format "yyyy-MM-dd"
