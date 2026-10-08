@@ -6,6 +6,22 @@
 
 ---
 
+## ⬇️ 立即下载
+
+### 👉 [点击下载 Light-Dark.zip](https://github.com/Charlie-lee123/light-dark/archive/refs/heads/main.zip) 👈
+
+下载后三步搞定：
+
+| 步骤 | 操作 |
+|------|------|
+| **1** | 解压下载的 ZIP 到任意文件夹 |
+| **2** | 右键 `install.ps1` → **使用 PowerShell 运行** |
+| **3** | 看到绿色「安装完成」→ 开始享受自动切换 🎉 |
+
+> 如果右键菜单没有「使用 PowerShell 运行」，打开 PowerShell 窗口，`cd` 到解压目录后执行 `.\install.ps1`
+
+---
+
 ## 这是什么？
 
 **项目定位：Windows 桌面自动化实用工具（Desktop Automation Utility）**
@@ -27,10 +43,10 @@ Windows 自带的深色模式只能手动切换，或者固定时间切换。但
 
 **我的思路是**：
 
-1. **先解决"什么时候切"** — 用经纬度查日出日落 API，拿到当天精确到分钟的时间
-2. **再解决"怎么切"** — 改 Windows 注册表的 `AppsUseLightTheme` / `SystemUsesLightTheme`，再广播系统消息让任务栏跟着刷新
-3. **再解决"谁来切"** — 注册 Windows 计划任务，在日出/日落时刻自动触发
-4. **最后解决"健壮性"** — 开机补切换（防止关机错过切换点）、断网回退缓存、每日自动更新时间
+1. **先解决「什么时候切」** — 用经纬度查日出日落 API，拿到当天精确到分钟的时间
+2. **再解决「怎么切」** — 改 Windows 注册表的 `AppsUseLightTheme` / `SystemUsesLightTheme`，再广播系统消息让任务栏跟着刷新
+3. **再解决「谁来切」** — 注册 Windows 计划任务，在日出/日落时刻自动触发
+4. **最后解决「健壮性」** — 开机补切换（防止关机错过切换点）、断网回退缓存、每日自动更新时间
 
 整个方案不装任何软件，不跑后台进程，只靠 Windows 自带的计划任务调度。
 
@@ -44,23 +60,7 @@ Windows 自带的深色模式只能手动切换，或者固定时间切换。但
 - 🌐 **断网兜底** — 网络不通时用上次缓存的时间，不会卡住
 - 🎛️ **手动控制** — 随时强制切深色/浅色
 
-## 快速开始
-
-### 安装
-
-1. 点击页面右上角 **Code → Download ZIP**，解压到任意目录
-2. 右键 `install.ps1` → **使用 PowerShell 运行**
-3. 看到绿色的"安装完成"就好了
-
-```powershell
-# 或者在 PowerShell 中执行：
-cd 解压目录
-.\install.ps1
-```
-
-安装完成后，它会在每天日出/日落自动切换，你什么都不用管。
-
-### 手动控制
+## 手动控制
 
 ```powershell
 .\auto-theme.ps1 -Dark    # 强制切深色
@@ -128,6 +128,13 @@ Remove-Item "$env:USERPROFILE\.auto-theme" -Recurse -Force
 
 ## 更新日志
 
+### v3.0 (2026-09-22)
+
+- **新增**：README 加入一键下载链接
+- **新增**：`install.ps1` 一键安装 / `uninstall.ps1` 一键卸载
+- **新增**：`.gitignore` 排除开发调试脚本，仓库干净发布
+- **文档**：完整 README（项目定位 / 设计思路 / 使用 / 卸载 / 更新日志）
+
 ### v2.0 (2026-09-22)
 
 - **修复**：计划任务注册失败导致自动切换完全失效的问题
@@ -136,9 +143,6 @@ Remove-Item "$env:USERPROFILE\.auto-theme" -Recurse -Force
 - **修复**：日出切换参数名错误（`-Sunrise` → `-Light`）
 - **修复**：每日刷新任务注册时空参数被 PowerShell 拒绝
 - **改进**：BootCheck 注册改为 cmdlet 方式，不再需要管理员权限
-- **新增**：`install.ps1` 一键安装脚本
-- **新增**：`uninstall.ps1` 一键卸载脚本
-- **新增**：完整 README 文档
 
 ### v1.x (2026-08 ~ 2026-09)
 
