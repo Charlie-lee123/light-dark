@@ -17,19 +17,27 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# 彻底隐藏控制台窗口（解决 -WindowStyle Hidden 不可靠的问题）
+# === 第一步：立刻隐藏窗口（必须在任何其他代码之前）===
 try {
-    Add-Type -TypeDefinition '
+    Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
-public class Win32 {
+public class Stealth {
     [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
-    [DllImport("user32.dll")]   public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")]   public static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")]   public static extern bool SetWindowPos(IntPtr h, IntPtr i, int x, int y, int w, int f, uint fl);
 }
-' -ErrorAction SilentlyContinue
-    $hwnd = [Win32]::GetConsoleWindow()
-    if ($hwnd -ne [IntPtr]::Zero) { [Win32]::ShowWindow($hwnd, 0) }
+"@ -ErrorAction SilentlyContinue
+    $h = [Stealth]::GetConsoleWindow()
+    if ($h -ne [IntPtr]::Zero) {
+        [void][Stealth]::ShowWindow($h, 0)          # SW_HIDE
+        [void][Stealth]::SetWindowPos($h, [IntPtr]::new(-1), 0,0,0,0, 3)  # HWND_TOPMOST + SWP_NOMOVE/SIZE
+        [void][Stealth]::SetWindowPos($h, [IntPtr]::new(-2), 0,0,0,0, 3)  # HWND_BOTTOM, push behind
+    }
 } catch {}
+
+# 第二步：静默模式——将标准输出重定向到空，防止任何 Write-Output 弹窗
+[Console]::SetOut([System.IO.StreamWriter]::new([System.IO.Stream]::Null))
 
 $PersonalizePath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
 $ConfigDir  = Join-Path $env:USERPROFILE ".auto-theme"
@@ -132,36 +140,13 @@ function Invoke-Locate {
 }
 
 function Get-SunTimes {
-    param($Lat, $Lon, $City = "")
-
-    # API 1: sunrise-sunset.org（精确坐标）
-    try {
-        $resp = Invoke-RestMethod -Uri "https://api.sunrise-sunset.org/json?lat=$Lat&lng=$Lon&formatted=0" -TimeoutSec 10
-        $localOffset = [TimeSpan]::FromHours(8)
-        $sunrise = [DateTimeOffset]::Parse($resp.results.sunrise).ToOffset($localOffset).ToString("HH:mm")
-        $sunset = [DateTimeOffset]::Parse($resp.results.sunset).ToOffset($localOffset).ToString("HH:mm")
-        Write-Log "Sun: sunrise=$sunrise sunset=$sunset (via sunrise-sunset.org)"
-        return @{ sunrise=$sunrise; sunset=$sunset }
-    } catch {
-        Write-Log "sunrise-sunset.org failed: $_"
-    }
-
-    # API 2: wttr.in（备用，通过城市名）
-    $cityQuery = if ($City) { $City } else { "Chongqing" }
-    try {
-        $wttrResp = Invoke-RestMethod -Uri "https://wttr.in/$([System.Uri]::EscapeDataString($cityQuery))?format=%S+%s" -TimeoutSec 10
-        $parts = $wttrResp.Trim() -split '\s+'
-        if ($parts.Count -eq 2) {
-            $sunrise = $parts[0].Substring(0, 5)  # HH:mm
-            $sunset = $parts[1].Substring(0, 5)
-            Write-Log "Sun: sunrise=$sunrise sunset=$sunset (via wttr.in)"
-            return @{ sunrise=$sunrise; sunset=$sunset }
-        }
-    } catch {
-        Write-Log "wttr.in failed: $_"
-    }
-
-    throw "Cannot get sun times from any API"
+    param($Lat, $Lon)
+    $resp = Invoke-RestMethod -Uri "https://api.sunrise-sunset.org/json?lat=$Lat&lng=$Lon&formatted=0" -TimeoutSec 10
+    $localOffset = [TimeSpan]::FromHours(8)
+    $sunrise = [DateTimeOffset]::Parse($resp.results.sunrise).ToOffset($localOffset).ToString("HH:mm")
+    $sunset = [DateTimeOffset]::Parse($resp.results.sunset).ToOffset($localOffset).ToString("HH:mm")
+    Write-Log "Sun: sunrise=$sunrise sunset=$sunset"
+    return @{ sunrise=$sunrise; sunset=$sunset }
 }
 
 function Set-WindowsTheme {
@@ -169,6 +154,7 @@ function Set-WindowsTheme {
     $value = if ($Mode -eq "dark") { 0 } else { 1 }
     Set-ItemProperty -Path $PersonalizePath -Name "AppsUseLightTheme" -Value $value
     Set-ItemProperty -Path $PersonalizePath -Name "SystemUsesLightTheme" -Value $value
+
     # 发送系统刷新消息
     try {
         Add-Type -TypeDefinition @"
@@ -189,7 +175,7 @@ public class ThemeRefresh {
         $result = [UIntPtr]::Zero
                 [ThemeRefresh]::SendMessageTimeout($HWND_BROADCAST, $WM_SETTINGCHANGE, [UIntPtr]::Zero, "ImmersiveColorSet", 2, 3000, [ref]$result) | Out-Null
     } catch {}
-    Write-Log "Switched to [$($Mode.ToUpper())]"
+    Write-Log "Switched to [$($Mode.ToUpper())] with taskbar color"
 }
 
 function Invoke-BootCheck {
@@ -261,7 +247,7 @@ try {
         $cfg = Get-Config
         try {
             $located = Invoke-Locate
-            $sun = Get-SunTimes -Lat $located.latitude -Lon $located.longitude -City $cfg.city
+            $sun = Get-SunTimes -Lat $located.latitude -Lon $located.longitude
             $cfg.sunrise = $sun.sunrise
             $cfg.sunset = $sun.sunset
             $cfg.lastDate = Get-Date -Format "yyyy-MM-dd"
@@ -275,12 +261,21 @@ try {
         exit 0
     }
 
-    $cfg = Invoke-Locate
-    $sun = Get-SunTimes -Lat $cfg.latitude -Lon $cfg.longitude -City $cfg.city
-    $cfg.sunrise = $sun.sunrise
-    $cfg.sunset = $sun.sunset
-    $cfg.lastDate = Get-Date -Format "yyyy-MM-dd"
-    Save-Config $cfg
+        $cfg = Invoke-Locate
+        try {
+        $sun = Get-SunTimes -Lat $cfg.latitude -Lon $cfg.longitude
+        $cfg.sunrise = $sun.sunrise
+        $cfg.sunset = $sun.sunset
+        $cfg.lastDate = Get-Date -Format "yyyy-MM-dd"
+        Save-Config $cfg
+    } catch {
+        Write-Log "Failed to get sun times from API, using cached values: Sunrise=$($cfg.sunrise) Sunset=$($cfg.sunset)"
+        if (-not $cfg.sunrise -or -not $cfg.sunset) {
+            throw "No cached sun times available and API failed"
+        }
+        # 用缓存值填充 $sun，确保后续任务注册和主题切换逻辑有值可用
+        $sun = @{ sunrise = $cfg.sunrise; sunset = $cfg.sunset }
+    }
 
     Invoke-BootCheck
 
@@ -294,70 +289,83 @@ try {
     $cfg.lastSwitchDate = Get-Date -Format "yyyy-MM-dd"
     Save-Config $cfg
 
-    $scriptPath = $PSCommandPath
+        $scriptPath = $PSCommandPath
     if (-not $scriptPath) { $scriptPath = Join-Path $PSScriptRoot "auto-theme.ps1" }
 
+
+                        # 使用 stealth-launcher.exe（C# 编译的原生 .exe），CreateNoWindow + ShowWindow(SW_HIDE)，零弹窗
+    $launcherPath = Join-Path (Split-Path $scriptPath) "stealth-launcher.exe"
+    $launcherExe = $launcherPath
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+
+    # --- 每个任务独立 try/catch，一个失败不影响其他 ---
+
+    # Sunrise（浅色）
     try {
-        Get-ScheduledTask -TaskName "AutoTheme-*" -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
-
-                $srTime = [DateTime]::Parse("2000-01-01 $($sun.sunrise)")
-        $vbsSunrise = Join-Path $PSScriptRoot "run-sunrise.vbs"
-        $a1 = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$vbsSunrise`""
+        $srTime = [DateTime]::Parse("2000-01-01 $($sun.sunrise)")
+                                $a1 = New-ScheduledTaskAction -Execute $launcherExe -Argument "-Light"
         $t1 = New-ScheduledTaskTrigger -Daily -At $srTime
-        Register-ScheduledTask -TaskName "AutoTheme-Sunrise" -Action $a1 -Trigger $t1 -Force | Out-Null
+        Register-ScheduledTask -TaskName "AutoTheme-Sunrise" -Action $a1 -Trigger $t1 -Settings $settings -Force | Out-Null
+        Write-Log "OK: Registered AutoTheme-Sunrise ($($sun.sunrise))"
+    } catch { Write-Log "FAIL: AutoTheme-Sunrise: $_" }
 
+    # Sunset（深色）
+    try {
         $ssTime = [DateTime]::Parse("2000-01-01 $($sun.sunset)")
-        $vbsSunset = Join-Path $PSScriptRoot "run-sunset.vbs"
-        $a2 = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$vbsSunset`""
+                                $a2 = New-ScheduledTaskAction -Execute $launcherExe -Argument "-Dark"
         $t2 = New-ScheduledTaskTrigger -Daily -At $ssTime
-        Register-ScheduledTask -TaskName "AutoTheme-Sunset" -Action $a2 -Trigger $t2 -Force | Out-Null
+        Register-ScheduledTask -TaskName "AutoTheme-Sunset" -Action $a2 -Trigger $t2 -Settings $settings -Force | Out-Null
+        Write-Log "OK: Registered AutoTheme-Sunset ($($sun.sunset))"
+    } catch { Write-Log "FAIL: AutoTheme-Sunset: $_" }
 
-        $vbsDaily = Join-Path $PSScriptRoot "run-boot.vbs"
-        $a3 = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$vbsDaily`""
+    # DailySetup（每日 00:05 更新日出日落 + 注册任务）
+    try {
+                                $a3 = New-ScheduledTaskAction -Execute $launcherExe
         $t3 = New-ScheduledTaskTrigger -Daily -At ([DateTime]::Parse("2000-01-01 00:05"))
-        Register-ScheduledTask -TaskName "AutoTheme-DailySetup" -Action $a3 -Trigger $t3 -Force | Out-Null
+        Register-ScheduledTask -TaskName "AutoTheme-DailySetup" -Action $a3 -Trigger $t3 -Settings $settings -Force | Out-Null
+        Write-Log "OK: Registered AutoTheme-DailySetup"
+    } catch { Write-Log "FAIL: AutoTheme-DailySetup: $_" }
 
-                        # BootCheck 通过 VBS 包装启动，彻底隐藏窗口
-        $vbsPath = Join-Path $PSScriptRoot "run-boot.vbs"
-        $a4 = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$vbsPath`""
+    # BootCheck（登录时补切换）
+    try {
+        $a4 = New-ScheduledTaskAction -Execute $launcherExe
         $t4 = New-ScheduledTaskTrigger -AtLogOn
-        Register-ScheduledTask -TaskName "AutoTheme-BootCheck" -Action $a4 -Trigger $t4 -Force | Out-Null
+        Register-ScheduledTask -TaskName "AutoTheme-BootCheck" -Action $a4 -Trigger $t4 -Settings $settings -Force | Out-Null
+        Write-Log "OK: Registered AutoTheme-BootCheck"
+    } catch { Write-Log "FAIL: AutoTheme-BootCheck: $_" }
 
-        # WiFi/网络连接时触发（解决开机时网络未就绪的问题）
-        $vbsNet = Join-Path $PSScriptRoot "run-netconnected.vbs"
-        $a5 = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$vbsNet`""
-        # 使用事件触发器：Microsoft-Windows-NetworkProfile/Operational 事件ID 10000（网络已连接）
-        $t5 = New-ScheduledTaskTrigger -AtLogOn  # 先创建基础触发器
-        $t5xml = $t5.ExportXml()
-        # 替换为事件触发器（XML方式）
-        $eventTriggerXml = @"
-<Triggers xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <EventTrigger>
-    <Enabled>true</Enabled>
-    <Subscription>
-      <![CDATA[
-        <QueryList>
-          <Query Id="0" Path="Microsoft-Windows-NetworkProfile/Operational">
-            <Select Path="Microsoft-Windows-NetworkProfile/Operational">*[System[(EventID=10000)]]</Select>
-          </Query>
-        </QueryList>
-      ]]>
-    </Subscription>
-    <Delay>PT10S</Delay>
-  </EventTrigger>
-</Triggers>
+
+    # NetworkCheck（网络连接时触发，XML 注册避免 ExportXml 问题）
+    try {
+                                $escapedLauncherPath2 = $launcherPath.Replace('&', '&amp;')
+        $netTaskXml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <EventTrigger>
+      <Enabled>true</Enabled>
+      <Subscription><![CDATA[<QueryList><Query Id="0" Path="Microsoft-Windows-NetworkProfile/Operational"><Select Path="Microsoft-Windows-NetworkProfile/Operational">*[System[(EventID=10000)]]</Select></Query></QueryList>]]></Subscription>
+      <Delay>PT10S</Delay>
+    </EventTrigger>
+  </Triggers>
+  <Actions>
+    <Exec>
+      <Command>$escapedLauncherPath2</Command>
+      <Arguments>-NetworkConnected</Arguments>
+    </Exec>
+  </Actions>
+  <Settings>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+  </Settings>
+</Task>
 "@
-        Register-ScheduledTask -TaskName "AutoTheme-NetworkCheck" -Action $a5 -Trigger (New-ScheduledTaskTrigger -AtLogOn) -Force | Out-Null
-        # 用 XML 注册事件触发器
-        $taskXml = Get-ScheduledTask -TaskName "AutoTheme-NetworkCheck" | Export-ScheduledTask
-        $taskXml = $taskXml -replace '<Triggers>.*?</Triggers>', $eventTriggerXml
-        Unregister-ScheduledTask -TaskName "AutoTheme-NetworkCheck" -Confirm:$false -ErrorAction SilentlyContinue
-        Register-ScheduledTask -TaskName "AutoTheme-NetworkCheck" -Xml $taskXml -Force | Out-Null
+        Register-ScheduledTask -TaskName "AutoTheme-NetworkCheck" -Xml $netTaskXml -Force | Out-Null
+        Write-Log "OK: Registered AutoTheme-NetworkCheck"
+    } catch { Write-Log "FAIL: AutoTheme-NetworkCheck: $_" }
 
-        Write-Log "Registered all tasks: Sunrise=$($sun.sunrise) Sunset=$($sun.sunset)"
-    } catch {
-        Write-Log "WARN: Cannot register tasks: $_"
-    }
+    Write-Log "Task registration complete"
 
     Write-Log "====== Setup Complete ======"
 } catch {

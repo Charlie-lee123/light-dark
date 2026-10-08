@@ -1,91 +1,171 @@
-# Windows 自动深色/浅色模式切换 (V2)
+# Light-Dark 🌅
 
-根据日出日落时间自动切换 Windows 深色/浅色模式。
+**Windows 日出日落自动深色/浅色模式切换工具**
 
-## V2 更新内容
+每天自动获取你所在位置的日出日落时间，日出后切浅色、日落后切深色，全程无感，不用手动调。
 
-- ✅ **任务栏实时刷新**：新增 `Invoke-ThemeRefresh` 功能，切换后任务栏立即响应
-- ✅ **日志增强**：记录切换过程中的详细信息，便于调试
+---
 
-## 功能特性
+## 这是什么？
 
-- 🌅 **日出切浅色**：天亮自动切回浅色模式
-- 🌆 **日落切深色**：天黑自动切深色模式
-- 📍 **自动定位**：根据 IP 地址自动获取你的位置
-- ⏰ **每日更新**：自动重新获取日出日落时间（凌晨 0:05）
-- 💾 **配置缓存**：位置信息缓存在 `~/.auto-theme/config.json`
-- 📝 **日志记录**：所有操作记录在 `~/.auto-theme/auto-theme.log`
+**项目定位：Windows 桌面自动化实用工具（Desktop Automation Utility）**
 
-## 使用方法
+不是系统插件（Shell Extension），不是驱动，不是服务，不是壁纸软件。它是一个**轻量级单机脚本工具**——用 PowerShell + Windows 计划任务实现的主题自动化，零第三方依赖，不常驻后台，不到 1MB。
 
-### 首次运行（自动设置）
+| 维度 | 说明 |
+|------|------|
+| 类别 | Windows 系统工具 / 桌面自动化 |
+| 形态 | PowerShell 脚本 + 计划任务 |
+| 依赖 | 无（仅用 Windows 自带组件） |
+| 权限 | 普通用户即可，无需管理员常驻 |
+| 体积 | 核心脚本不到 20KB |
+| 系统 | Windows 10 / 11 |
+
+## 为什么做这个？
+
+Windows 自带的深色模式只能手动切换，或者固定时间切换。但日出日落每天都在变——夏天 6 点天亮，冬天 7 点才亮；夏天 7 点天黑，冬天 6 点就黑了。固定时间切换总有不对的时候。
+
+**我的思路是**：
+
+1. **先解决"什么时候切"** — 用经纬度查日出日落 API，拿到当天精确到分钟的时间
+2. **再解决"怎么切"** — 改 Windows 注册表的 `AppsUseLightTheme` / `SystemUsesLightTheme`，再广播系统消息让任务栏跟着刷新
+3. **再解决"谁来切"** — 注册 Windows 计划任务，在日出/日落时刻自动触发
+4. **最后解决"健壮性"** — 开机补切换（防止关机错过切换点）、断网回退缓存、每日自动更新时间
+
+整个方案不装任何软件，不跑后台进程，只靠 Windows 自带的计划任务调度。
+
+## 功能
+
+- 🌍 **自动定位** — 通过 IP 自动获取当前位置，换城市不用改配置
+- 🌅 **日出 → 浅色** — 每天日出时刻自动切换浅色模式
+- 🌇 **日落 → 深色** — 每天日落时刻自动切换深色模式
+- 🔄 **每日自动刷新** — 凌晨 00:05 重新获取当天日出日落时间
+- 🔧 **开机补切换** — 如果关机错过了切换点，开机自动修正
+- 🌐 **断网兜底** — 网络不通时用上次缓存的时间，不会卡住
+- 🎛️ **手动控制** — 随时强制切深色/浅色
+
+## 快速开始
+
+### 安装
+
+1. 点击页面右上角 **Code → Download ZIP**，解压到任意目录
+2. 右键 `install.ps1` → **使用 PowerShell 运行**
+3. 看到绿色的"安装完成"就好了
 
 ```powershell
-.\auto-theme.ps1
+# 或者在 PowerShell 中执行：
+cd 解压目录
+.\install.ps1
 ```
 
-### 手动切换
+安装完成后，它会在每天日出/日落自动切换，你什么都不用管。
+
+### 手动控制
 
 ```powershell
-.\auto-theme.ps1 -Dark    # 立即切深色
-.\auto-theme.ps1 -Light   # 立即切浅色
+.\auto-theme.ps1 -Dark    # 强制切深色
+.\auto-theme.ps1 -Light   # 强制切浅色
 ```
 
-### 以管理员身份运行
+## 工作原理
 
-计划任务需要管理员权限。首次运行后，如果有管理员权限，会自动注册以下任务：
+```
+┌─────────────────────────────────────────────────┐
+│                   每天 00:05                      │
+│              AutoTheme-DailySetup                 │
+│                                                   │
+│   IP定位 → 获取经纬度 → 查询日出日落 API           │
+│   → 更新计划任务触发时间                           │
+└──────────────────────┬──────────────────────────┘
+                       │
+        ┌──────────────┼──────────────┐
+        ▼              ▼              ▼
+   ┌─────────┐   ┌──────────┐   ┌──────────┐
+   │  日出    │   │  日落    │   │  开机    │
+   │ 06:40   │   │ 18:52   │   │  登录时  │
+   │ → 浅色  │   │ → 深色  │   │ → 补切换 │
+   └─────────┘   └──────────┘   └──────────┘
+```
 
-- `AutoTheme-Sunrise` - 日出时切浅色
-- `AutoTheme-Sunset` - 日落时切深色
-- `AutoTheme-DailySetup` - 每日重新定位和更新时间
+**核心技术点**：
 
-## 配置文件
+1. **定位**：高德 IP 定位 API → 自动获取城市和经纬度（IP 定位不准时可手动改配置）
+2. **日出日落**：sunrise-sunset.org API，返回 UTC 时间后转本地时区
+3. **主题切换**：修改注册表 `HKCU\...\Themes\Personalize` 下的 `AppsUseLightTheme` 和 `SystemUsesLightTheme`，然后调用 `SystemParametersInfo` + 广播 `WM_SETTINGCHANGE` 让任务栏同步刷新
+4. **调度**：Windows 计划任务（Task Scheduler），不需要后台进程
 
-位置：`~/.auto-theme/config.json`
+## 配置
+
+配置文件在 `~/.auto-theme/config.json`，一般不需要改：
 
 ```json
 {
-  "latitude": 29.3416,
-  "longitude": 104.7786,
-  "city": "Neijiang, CN",
-  "sunrise": "06:23",
-  "sunset": "19:25",
-  "darkMode": true,
-  "lastDate": "2026-08-18",
-  "lastLocate": "2026-08-18"
+    "latitude": 29.56268,
+    "longitude": 106.551787,
+    "city": "重庆市, CN",
+    "sunrise": "06:40",
+    "sunset": "18:52"
 }
 ```
 
-## 日志文件
+**手动设置位置**（比如用了 VPN 导致 IP 定位不准）：直接改 `latitude` 和 `longitude`，然后把 `lastLocate` 设为空字符串 `""`，下次运行会重新获取日出日落。
 
-位置：`~/.auto-theme/auto-theme.log`
+## 卸载
 
-## 系统要求
+```powershell
+.\uninstall.ps1
+```
 
-- Windows 10/11
-- PowerShell 5.1+
+或者手动卸载：
 
-## 故障排查
+```powershell
+# 删除计划任务
+Get-ScheduledTask -TaskName "AutoTheme*" | Unregister-ScheduledTask -Confirm:$false
 
-1. **查看日志**：
-   ```powershell
-   cat ~/.auto-theme/auto-theme.log
-   ```
+# 删除配置
+Remove-Item "$env:USERPROFILE\.auto-theme" -Recurse -Force
+```
 
-2. **查看计划任务**：
-   ```powershell
-   Get-ScheduledTask -TaskName "AutoTheme-*"
-   ```
+## 更新日志
 
-3. **手动触发**：
-   ```powershell
-   # 手动执行日出切换
-   .\auto-theme.ps1 -Light
-   
-   # 手动执行日落切换
-   .\auto-theme.ps1 -Dark
-   ```
+### v2.0 (2026-09-22)
 
-## 许可证
+- **修复**：计划任务注册失败导致自动切换完全失效的问题
+  - 原因：脚本先删全部任务再注册，注册失败后任务全丢
+  - 方案：改用 `-Force` 覆盖式注册，不再先删除
+- **修复**：日出切换参数名错误（`-Sunrise` → `-Light`）
+- **修复**：每日刷新任务注册时空参数被 PowerShell 拒绝
+- **改进**：BootCheck 注册改为 cmdlet 方式，不再需要管理员权限
+- **新增**：`install.ps1` 一键安装脚本
+- **新增**：`uninstall.ps1` 一键卸载脚本
+- **新增**：完整 README 文档
+
+### v1.x (2026-08 ~ 2026-09)
+
+- 高德 IP 自动定位，支持全国城市
+- 日出日落 API 自动获取时间（sunrise-sunset.org + wttr.in 备用）
+- 开机补切换，解决关机错过切换点
+- 网络连接触发，解决开机时网络未就绪
+- 任务栏同步切换（SystemParametersInfo + ImmersiveColorSet 广播）
+- 无窗口静默运行（stealth-launcher）
+
+## 常见问题
+
+**Q: 需要管理员权限吗？**
+A: 不需要。所有设置都是当前用户级别的。
+
+**Q: 会占用资源吗？**
+A: 不会。没有常驻进程，只在切换时刻运行几秒钟。
+
+**Q: VPN/代理下定位不准怎么办？**
+A: 手动改 `~/.auto-theme/config.json` 里的经纬度。
+
+**Q: 支持 Windows 7 吗？**
+A: 不支持，需要 Windows 10/11（用到了 Windows 10 的主题注册表项）。
+
+**Q: 怎么改切换时间？**
+A: 不用改。它每天自动根据日出日落调整，比手动设时间准。
+
+## License
 
 MIT License

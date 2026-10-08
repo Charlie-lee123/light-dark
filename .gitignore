@@ -1,0 +1,25 @@
+# 开发调试脚本（不随仓库发布）
+_*.ps1
+fix-*.ps1
+fix-*.bat
+fix-*.cmd
+diagnose.ps1
+check-all.ps1
+list-tasks.ps1
+verify-*.ps1
+create-*.ps1
+create-*.bat
+create-*.cmd
+register-*.ps1
+update-*.ps1
+update-*.bat
+setup-tasks.ps1
+auto-theme.ps1.local
+auto-theme-daemon.ps1
+github-auto-theme.ps1
+boot-check.xml
+auto-theme.vbs
+auto-theme-launcher.vbs
+run-hidden.vbs
+run-silent.vbs
+run-wake-delayed.vbs
