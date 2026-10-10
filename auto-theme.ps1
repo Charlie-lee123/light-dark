@@ -39,6 +39,19 @@ public class Stealth {
 # 第二步：静默模式——将标准输出重定向到空，防止任何 Write-Output 弹窗
 [Console]::SetOut([System.IO.StreamWriter]::new([System.IO.Stream]::Null))
 
+# 第三步：单实例互斥——多个计划任务同时触发时只允许一个实例运行
+# （防止并发写 config.json / 日志文件导致文件损坏）
+try {
+    $script:InstanceMutex = New-Object System.Threading.Mutex($false, "Local\AutoThemeSingleInstance")
+    $acquired = $false
+    try {
+        $acquired = $script:InstanceMutex.WaitOne([TimeSpan]::FromSeconds(5))
+    } catch [System.Threading.AbandonedMutexException] {
+        $acquired = $true  # 上一个实例异常退出，互斥体已被放弃，视为获得锁
+    }
+    if (-not $acquired) { exit 0 }
+} catch { }
+
 $PersonalizePath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
 $ConfigDir  = Join-Path $env:USERPROFILE ".auto-theme"
 $ConfigFile = Join-Path $ConfigDir "config.json"
@@ -47,12 +60,23 @@ $LogFile    = Join-Path $ConfigDir "auto-theme.log"
 function Write-Log {
     param([string]$Msg)
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    "[$ts] $Msg" | Out-File -FilePath $LogFile -Encoding utf8 -Append
+    for ($i = 0; $i -lt 4; $i++) {
+        try { "[$ts] $Msg" | Out-File -FilePath $LogFile -Encoding utf8 -Append -ErrorAction Stop; return } catch { Start-Sleep -Milliseconds 250 }
+    }
 }
 
 function Get-Config {
     if (Test-Path $ConfigFile) {
-        $cfg = Get-Content $ConfigFile -Raw | ConvertFrom-Json
+        try {
+            $raw = Get-Content $ConfigFile -Raw
+            if ([string]::IsNullOrWhiteSpace($raw)) { throw "config file is empty" }
+            $cfg = $raw | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            # 配置文件损坏：备份后当作无配置处理，避免整个流程瘫痪
+            Write-Log "Config corrupt, backing up: $_"
+            try { Move-Item $ConfigFile "$ConfigFile.corrupt" -Force -ErrorAction SilentlyContinue } catch { }
+            return $null
+        }
         if (-not ($cfg.PSObject.Properties.Name -contains "lastSwitch")) {
             $cfg | Add-Member -NotePropertyName "lastSwitch" -NotePropertyValue ""
         }
@@ -67,7 +91,12 @@ function Get-Config {
 function Save-Config {
     param($Cfg)
     if (-not (Test-Path $ConfigDir)) { New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null }
-    $Cfg | ConvertTo-Json -Depth 10 | Set-Content $ConfigFile -Encoding UTF8
+    # 原子写入：先写临时文件，再整体替换，避免并发写导致配置损坏
+    $tmpFile = "$ConfigFile.tmp"
+    $Cfg | ConvertTo-Json -Depth 10 | Set-Content $tmpFile -Encoding UTF8
+    for ($i = 0; $i -lt 5; $i++) {
+        try { Move-Item $tmpFile $ConfigFile -Force -ErrorAction Stop; return } catch { Start-Sleep -Milliseconds 250 }
+    }
 }
 
 function Invoke-Locate {
@@ -326,12 +355,16 @@ try {
         Write-Log "OK: Registered AutoTheme-DailySetup"
     } catch { Write-Log "FAIL: AutoTheme-DailySetup: $_" }
 
-    # BootCheck（登录时补切换）
+    # BootCheck（登录时补切换）——已存在则跳过（普通权限下重复注册会报拒绝访问）
     try {
-        $a4 = New-ScheduledTaskAction -Execute $launcherExe
-        $t4 = New-ScheduledTaskTrigger -AtLogOn
-        Register-ScheduledTask -TaskName "AutoTheme-BootCheck" -Action $a4 -Trigger $t4 -Settings $settings -Force | Out-Null
-        Write-Log "OK: Registered AutoTheme-BootCheck"
+        if (-not (Get-ScheduledTask -TaskName "AutoTheme-BootCheck" -ErrorAction SilentlyContinue)) {
+            $a4 = New-ScheduledTaskAction -Execute $launcherExe
+            $t4 = New-ScheduledTaskTrigger -AtLogOn
+            Register-ScheduledTask -TaskName "AutoTheme-BootCheck" -Action $a4 -Trigger $t4 -Settings $settings -Force | Out-Null
+            Write-Log "OK: Registered AutoTheme-BootCheck"
+        } else {
+            Write-Log "SKIP: AutoTheme-BootCheck already exists"
+        }
     } catch { Write-Log "FAIL: AutoTheme-BootCheck: $_" }
 
 
