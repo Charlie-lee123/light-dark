@@ -165,7 +165,47 @@ function Invoke-Locate {
         $cfg.lastLocate = $today
         return $cfg
     }
-    throw "Cannot locate - no saved coordinates"
+
+    # 3) fallback: 免密钥 IP 地理定位（高德配额超限/失败时仍能定位）
+    try {
+        $geo = Invoke-RestMethod -Uri "https://ipapi.co/json/" -TimeoutSec 8
+        if ($geo -and $geo.latitude -and $geo.longitude) {
+            $cfg.latitude = [double]$geo.latitude
+            $cfg.longitude = [double]$geo.longitude
+            $cfg.city = if ($geo.city) { "$($geo.city), $($geo.country_name)" } else { "$($geo.country_name)" }
+            $cfg.lastLocate = $today
+            Save-Config $cfg
+            Write-Log "Located via ipapi.co: $($cfg.city) ($($cfg.latitude), $($cfg.longitude))"
+            return $cfg
+        }
+    } catch {
+        Write-Log "ipapi.co fallback failed: $_"
+    }
+
+    # 4) fallback: 另一个免密钥服务
+    try {
+        $geo2 = Invoke-RestMethod -Uri "https://ip-api.com/json" -TimeoutSec 8
+        if ($geo2 -and $geo2.lat -and $geo2.lon) {
+            $cfg.latitude = [double]$geo2.lat
+            $cfg.longitude = [double]$geo2.lon
+            $cfg.city = if ($geo2.city) { "$($geo2.city), $($geo2.country)" } else { "$($geo2.country)" }
+            $cfg.lastLocate = $today
+            Save-Config $cfg
+            Write-Log "Located via ip-api.com: $($cfg.city) ($($cfg.latitude), $($cfg.longitude))"
+            return $cfg
+        }
+    } catch {
+        Write-Log "ip-api.com fallback failed: $_"
+    }
+
+    # 5) 终极兜底：默认城市（重庆），保证新装机不依赖任何外部服务也能建任务并切换
+    $cfg.latitude = 29.56268
+    $cfg.longitude = 106.551787
+    $cfg.city = "重庆市, CN (default)"
+    $cfg.lastLocate = $today
+    Save-Config $cfg
+    Write-Log "Using default location (Chongqing) - all geolocation failed"
+    return $cfg
 }
 
 function Get-SunTimes {
@@ -290,38 +330,33 @@ try {
         exit 0
     }
 
+        # 定位 + 取日出日落（任何网络失败都不影响下面的任务注册）
         $cfg = Invoke-Locate
+        $sun = $null
         try {
-        $sun = Get-SunTimes -Lat $cfg.latitude -Lon $cfg.longitude
-        $cfg.sunrise = $sun.sunrise
-        $cfg.sunset = $sun.sunset
-        $cfg.lastDate = Get-Date -Format "yyyy-MM-dd"
-        Save-Config $cfg
-    } catch {
-        Write-Log "Failed to get sun times from API, using cached values: Sunrise=$($cfg.sunrise) Sunset=$($cfg.sunset)"
-        if (-not $cfg.sunrise -or -not $cfg.sunset) {
-            throw "No cached sun times available and API failed"
+            $st = Get-SunTimes -Lat $cfg.latitude -Lon $cfg.longitude
+            $cfg.sunrise = $st.sunrise
+            $cfg.sunset = $st.sunset
+            $cfg.lastDate = Get-Date -Format "yyyy-MM-dd"
+            Save-Config $cfg
+            $sun = $st
+            Write-Log "Sun times updated: Sunrise=$($st.sunrise) Sunset=$($st.sunset)"
+        } catch {
+            Write-Log "Get sun times failed: $_"
+            if ($cfg.sunrise -and $cfg.sunset) {
+                # 用缓存值，确保任务注册和主题切换有值可用
+                $sun = @{ sunrise = $cfg.sunrise; sunset = $cfg.sunset }
+                Write-Log "Using cached sun times: Sunrise=$($cfg.sunrise) Sunset=$($cfg.sunset)"
+            } else {
+                # 既无网络又无缓存：用默认时间，保证任务一定建好
+                $sun = @{ sunrise = "06:40"; sunset = "18:52" }
+                Write-Log "Using DEFAULT sun times (no network, no cache)"
+            }
         }
-        # 用缓存值填充 $sun，确保后续任务注册和主题切换逻辑有值可用
-        $sun = @{ sunrise = $cfg.sunrise; sunset = $cfg.sunset }
-    }
 
-    Invoke-BootCheck
-
-    $now = Get-Date -Format "HH:mm"
-    if ($now -ge $sun.sunrise -and $now -lt $sun.sunset) {
-        Set-WindowsTheme -Mode "light"
-    } else {
-        Set-WindowsTheme -Mode "dark"
-    }
-    $cfg.lastSwitch = $now
-    $cfg.lastSwitchDate = Get-Date -Format "yyyy-MM-dd"
-    Save-Config $cfg
-
+    # --- 先计算启动器路径与任务设置（注册任务前准备好）---
         $scriptPath = $PSCommandPath
     if (-not $scriptPath) { $scriptPath = Join-Path $PSScriptRoot "auto-theme.ps1" }
-
-
                         # 使用 stealth-launcher.exe（C# 编译的原生 .exe），CreateNoWindow + ShowWindow(SW_HIDE)，零弹窗
     $launcherPath = Join-Path (Split-Path $scriptPath) "stealth-launcher.exe"
     $launcherExe = $launcherPath
@@ -399,6 +434,19 @@ try {
     } catch { Write-Log "FAIL: AutoTheme-NetworkCheck: $_" }
 
     Write-Log "Task registration complete"
+
+    # --- 任务已建好，再做开机补切换与即时切换（即使此处出错也不影响已注册的任务）---
+    Invoke-BootCheck
+
+    $now = Get-Date -Format "HH:mm"
+    if ($now -ge $sun.sunrise -and $now -lt $sun.sunset) {
+        Set-WindowsTheme -Mode "light"
+    } else {
+        Set-WindowsTheme -Mode "dark"
+    }
+    $cfg.lastSwitch = $now
+    $cfg.lastSwitchDate = Get-Date -Format "yyyy-MM-dd"
+    Save-Config $cfg
 
     Write-Log "====== Setup Complete ======"
 } catch {
